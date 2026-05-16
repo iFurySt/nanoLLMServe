@@ -2,6 +2,8 @@
 
 This repository builds a tiny, readable LLM serving engine.
 
+The project is teaching-first, but the implementation standard is production-minded. Readability is not an excuse for vague correctness or weak performance. On single-machine and single-GPU paths, features should aim to match the behavior and performance shape of serious serving systems, even when this repo cannot cover large-scale distributed production scenarios.
+
 `AGENTS.md` stays short on purpose. Treat it as a map, not the encyclopedia. Repository-local markdown under `docs/` is the system of record.
 
 If a code or workflow change makes a doc stale, update the doc in the same task.
@@ -33,6 +35,11 @@ If a code or workflow change makes a doc stale, update the doc in the same task.
 ## Working Rules
 
 - Prefer small, explicit, repository-legible abstractions.
+- Treat each feature as a production concept implemented at teaching scale.
+- Add or update tests for repeated correctness checks before calling work complete.
+- Include functional validation and performance validation for serving changes.
+- Do not hand-wave performance-sensitive paths; benchmark them and record the result.
+- For single-machine or single-GPU behavior, keep the bar close to production serving expectations.
 - Keep prompts, policies, and architectural rules versioned in-repo.
 - For complex work, create an execution plan instead of relying on long chat context.
 - Record finished code changes in `docs/histories/`.
