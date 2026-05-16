@@ -1,37 +1,27 @@
-# harness-template
+# nanoLLMServe
 
-中文版本：[`harness-template-cn`](https://github.com/iFurySt/harness-template-cn)
+`nanoLLMServe` is a tiny, readable LLM serving engine.
 
-## Intro
+The goal is to build a small vLLM/SGLang-style system that can actually run,
+while keeping each production serving idea easy to inspect:
 
-An agent-first base repo template for building any product you want.
+- OpenAI-compatible API
+- KV cache decode
+- batching and continuous batching
+- block KV cache management
+- prefix cache
+- chunked prefill
+- metrics, structured output, speculative decoding, LoRA, quantization, and distributed serving
 
-## Quick Start
+It is not trying to be faster than vLLM. It is trying to make the serving stack
+understandable.
 
-Use GitHub's template flow from the top right of this repository:
+## Roadmap
 
-1. Select **Use this template**.
-2. Select [**Create a new repository**](https://github.com/new?template_name=harness-template&template_owner=iFurySt).
+Milestones live in [`docs/exec-plans/active/milestones`](./docs/exec-plans/active/milestones).
 
-Or initialize a new or existing repository with [`harness-cli`](https://github.com/iFurySt/harness-cli).
-Install it from npm first:
-
-```sh
-npm install -g @ifuryst/harness-cli
-```
-
-Then run:
-
-```sh
-harness-cli init --language en
-```
-
-`harness-cli` requires Node.js 18+ and Go on your `PATH`.
+Start with [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md).
 
 ## License
 
 [MIT](LICENSE)
-
-## Note
-
-This approach comes from our own exploration, while also drawing on some ideas from OpenAI's [harness engineering write-up](https://openai.com/index/harness-engineering/).

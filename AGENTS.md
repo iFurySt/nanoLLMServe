@@ -1,6 +1,6 @@
-# harness-template
+# nanoLLMServe
 
-This repository is a base template for agent-first software projects.
+This repository builds a tiny, readable LLM serving engine.
 
 `AGENTS.md` stays short on purpose. Treat it as a map, not the encyclopedia. Repository-local markdown under `docs/` is the system of record.
 
