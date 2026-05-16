@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling>=1.26"]
+build-backend = "hatchling.build"
+
+[project]
+name = "nanollmserve"
+version = "0.0.0"
+description = "A tiny, readable LLM serving engine."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = [
+  "numpy<2",
+  "safetensors>=0.4.5",
+  "torch>=2.1",
+  "transformers>=4.51,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8",
+]
+
+[project.scripts]
+nanollm-generate = "nanollmserve.cli.generate:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nanollmserve"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | D | Not yet defined. | Define the first user journey and acceptance criteria. |
-| Architecture docs | C | Base scaffold exists but needs project-specific content. | Fill in `docs/ARCHITECTURE.md`. |
-| Testing | D | No stack-specific tests yet. | Add a minimal smoke path with one real command. |
+| Product surface | C | v0.0 defines a CLI path for one prompt and one causal LM. | Add the OpenAI-compatible HTTP API in v0.1. |
+| Architecture docs | B | Package boundaries and v0.0 runtime flow are documented. | Revisit when HTTP serving changes the topology. |
+| Testing | C | Unit tests cover CLI parsing/main flow, sampling edge cases, naive decode loop boundaries, and HF loader argument/dependency behavior; local no-torch environments skip torch-specific checks. | Add real-model smoke tests once CI has an appropriate runner or cached tiny model. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |

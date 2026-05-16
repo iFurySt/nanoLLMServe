@@ -25,6 +25,49 @@ Milestones live in [`docs/exec-plans/active/milestones`](./docs/exec-plans/activ
 
 Start with [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md).
 
+## v0.0 Quick Start
+
+Install the package in a virtual environment:
+
+```bash
+uv venv --python python3
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
+Generate text for one prompt:
+
+```bash
+nanollm-generate \
+  --model Qwen/Qwen3-1.7B \
+  --prompt "Explain KV cache in one sentence." \
+  --max-new-tokens 32 \
+  --temperature 0 \
+  --show-stats
+```
+
+On the A100 harness machine, use the cached local weights:
+
+```bash
+nanollm-generate \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --prompt "Explain KV cache in one sentence." \
+  --max-new-tokens 32 \
+  --temperature 0 \
+  --show-stats
+```
+
+Run the minimal benchmark:
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --runs 3 \
+  --warmup 1
+```
+
 ## License
 
 [MIT](LICENSE)

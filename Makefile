@@ -1,7 +1,8 @@
 PROJECT ?=
 SLUG ?=
+PYTHON ?= python3
 
-.PHONY: init check-docs check-repo new-history new-plan
+.PHONY: init check-docs check-repo new-history new-plan test
 
 init:
 	@if [ -z "$(PROJECT)" ]; then echo "usage: make init PROJECT=my-project"; exit 1; fi
@@ -13,6 +14,10 @@ check-docs:
 check-repo:
 	./scripts/check-docs.sh
 	./scripts/check-repo-hygiene.sh
+	$(PYTHON) -m pytest -q
+
+test:
+	$(PYTHON) -m pytest -q
 
 new-history:
 	@if [ -z "$(SLUG)" ]; then echo "usage: make new-history SLUG=my-change"; exit 1; fi

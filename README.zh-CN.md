@@ -23,6 +23,49 @@ Milestone 放在 [`docs/exec-plans/active/milestones`](./docs/exec-plans/active/
 
 从 [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md) 开始。
 
+## v0.0 Quick Start
+
+先创建隔离环境并安装：
+
+```bash
+uv venv --python python3
+source .venv/bin/activate
+uv pip install -e ".[dev]"
+```
+
+对单个 prompt 生成文本：
+
+```bash
+nanollm-generate \
+  --model Qwen/Qwen3-1.7B \
+  --prompt "Explain KV cache in one sentence." \
+  --max-new-tokens 32 \
+  --temperature 0 \
+  --show-stats
+```
+
+A100 harness 机器上优先使用已缓存的本地权重：
+
+```bash
+nanollm-generate \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --prompt "Explain KV cache in one sentence." \
+  --max-new-tokens 32 \
+  --temperature 0 \
+  --show-stats
+```
+
+运行最小 benchmark：
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --runs 3 \
+  --warmup 1
+```
+
 ## License
 
 [MIT](LICENSE)
