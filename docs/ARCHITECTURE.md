@@ -28,11 +28,12 @@ package boundaries before later milestones add serving complexity.
 - `scripts/`: repository automation that agents can run directly.
 - `docs/`: the repository knowledge base and system of record.
 
-The v0.0 runtime is intentionally a single-process Python CLI. It loads one
+The v0.1 runtime is intentionally a single-process Python service. It loads one
 Hugging Face causal LM, tokenizes one prompt, repeatedly runs the model over the
 full growing sequence, samples one token, and decodes only the generated tokens.
-This path is deliberately naive so later milestones can make the performance
-reason for KV cache decode and batching visible.
+The CLI and HTTP server both use this deliberately naive path so later
+milestones can make the performance reason for KV cache decode and batching
+visible.
 
 ## Target Package Layout
 
@@ -132,11 +133,23 @@ CLI args
        -> sampling.sample_next_token()
        -> append token
   -> tokenizer.decode(generated_token_ids)
+
+HTTP JSON
+  -> api.protocol request models
+  -> api.openai_server FastAPI endpoint
+  -> engine.generate_one() or engine.stream_generate_one()
+  -> api.protocol response models or SSE chunks
 ```
 
 ## Known Gaps
 
-- No HTTP API yet; that begins in `v0.1`.
-- No explicit KV cache handling yet; `v0.0` relies on default model behavior and
-  recomputes the growing sequence to keep the baseline readable.
+- No explicit KV cache handling yet; the current naive path relies on default
+  model behavior and recomputes the growing sequence to keep the baseline
+  readable.
 - No batching yet; all APIs are intentionally single prompt / single request.
+- The OpenAI-compatible server covers the common `/v1/models`,
+  `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
+  does not implement auth, tools, background Responses runs, Responses cancel,
+  multi-choice generation, logprobs, multimodal messages, or model routing.
+  Full Responses lifecycle and tool parity is tracked in
+  `docs/exec-plans/active/milestones/v0.10-responses-api-parity.md`.

@@ -20,8 +20,8 @@ Build a readable LLM serving engine through small, runnable milestones.
 
 ## Milestones
 
-- [ ] [`v0.0` naive single request](./milestones/v0.0-naive-single-request.md)
-- [ ] [`v0.1` OpenAI-compatible server](./milestones/v0.1-openai-compatible-server.md)
+- [x] [`v0.0` naive single request](./milestones/v0.0-naive-single-request.md)
+- [x] [`v0.1` OpenAI-compatible server](./milestones/v0.1-openai-compatible-server.md)
 - [ ] [`v0.2` KV cache decode](./milestones/v0.2-kv-cache-decode.md)
 - [ ] [`v0.3` static batching](./milestones/v0.3-static-batching.md)
 - [ ] [`v0.4` continuous batching](./milestones/v0.4-continuous-batching.md)
@@ -30,6 +30,7 @@ Build a readable LLM serving engine through small, runnable milestones.
 - [ ] [`v0.7` chunked prefill](./milestones/v0.7-chunked-prefill.md)
 - [ ] [`v0.8` observability](./milestones/v0.8-observability.md)
 - [ ] [`v0.9` structured output](./milestones/v0.9-structured-output.md)
+- [ ] [`v0.10` Responses API parity](./milestones/v0.10-responses-api-parity.md)
 - [ ] [`v1.0` speculative decoding](./milestones/v1.0-speculative-decoding.md)
 - [ ] [`v1.1` LoRA serving](./milestones/v1.1-lora-serving.md)
 - [ ] [`v1.2` quantization](./milestones/v1.2-quantization.md)
@@ -49,3 +50,6 @@ Each milestone should include:
 ## Decision Log
 
 - 2026-05-16: Use `nanoLLMServe` as the project name and track roadmap milestones as repo files.
+- 2026-05-17: Keep the v0.1 Responses API as a text-only teaching subset and
+  schedule full Responses lifecycle/tool parity as `v0.10`, after structured
+  output and before speculative decoding.

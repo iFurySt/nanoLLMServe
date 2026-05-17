@@ -21,7 +21,8 @@
 
 Milestone 放在 [`docs/exec-plans/active/milestones`](./docs/exec-plans/active/milestones)。
 
-从 [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md) 开始。
+从 [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md) 开始，
+再进入 [`v0.1 OpenAI-compatible server`](./docs/exec-plans/active/milestones/v0.1-openai-compatible-server.md)。
 
 ## v0.0 Quick Start
 
@@ -64,6 +65,66 @@ python benchmarks/benchmark_generate.py \
   --local-files-only \
   --runs 3 \
   --warmup 1
+```
+
+## v0.1 OpenAI-Compatible Server
+
+启动一个只服务单个本地或 Hugging Face causal LM 的 HTTP server：
+
+```bash
+nanollm-serve \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --served-model-name Qwen3-1.7B \
+  --local-files-only \
+  --host 127.0.0.1 \
+  --port 8000
+```
+
+查看模型列表：
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+调用推荐的 Responses endpoint：
+
+```bash
+curl http://127.0.0.1:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-1.7B",
+    "instructions": "Answer in one sentence.",
+    "input": "Explain KV cache.",
+    "max_output_tokens": 32,
+    "temperature": 0
+  }'
+```
+
+调用 chat completions：
+
+```bash
+curl http://127.0.0.1:8000/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-1.7B",
+    "messages": [{"role": "user", "content": "Explain KV cache in one sentence."}],
+    "max_tokens": 32,
+    "temperature": 0
+  }'
+```
+
+Streaming 使用 OpenAI 风格的 server-sent events：
+
+```bash
+curl -N http://127.0.0.1:8000/v1/responses \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "model": "Qwen3-1.7B",
+    "input": "KV cache is",
+    "max_output_tokens": 16,
+    "temperature": 0,
+    "stream": true
+  }'
 ```
 
 ## License

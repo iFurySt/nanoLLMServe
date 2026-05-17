@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from nanollmserve.engine.engine import generate_one
+from nanollmserve.engine.engine import generate_one, stream_generate_one
 
 
 class FakeTokenizer:
@@ -61,6 +61,7 @@ def test_generate_one_runs_until_eos():
     assert result.prompt_tokens == 1
     assert result.generated_tokens == 3
     assert result.elapsed_seconds >= 0
+    assert result.finished is True
 
 
 def test_generate_one_rejects_empty_prompt():
@@ -88,6 +89,7 @@ def test_generate_one_stops_at_max_new_tokens_without_eos():
     assert result.generated_token_ids == [2, 3]
     assert result.generated_tokens == 2
     assert result.text == "AB"
+    assert result.finished is False
 
 
 def test_generate_one_creates_attention_mask_when_missing():
@@ -105,3 +107,20 @@ def test_generate_one_creates_attention_mask_when_missing():
         [[1]],
         [[1, 1]],
     ]
+
+
+def test_stream_generate_one_yields_incremental_tokens():
+    steps = list(
+        stream_generate_one(
+            FakeModel(),
+            FakeTokenizer(),
+            "hello",
+            max_new_tokens=3,
+            temperature=0.0,
+        )
+    )
+
+    assert [step.text for step in steps] == ["A", "B", ""]
+    assert [step.generated_text for step in steps] == ["A", "AB", "AB"]
+    assert [step.generated_token_ids for step in steps] == [[2], [2, 3], [2, 3, 9]]
+    assert steps[-1].finished is True

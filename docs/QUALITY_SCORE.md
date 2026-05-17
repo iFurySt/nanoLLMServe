@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | C | v0.0 defines a CLI path for one prompt and one causal LM. | Add the OpenAI-compatible HTTP API in v0.1. |
-| Architecture docs | B | Package boundaries and v0.0 runtime flow are documented. | Revisit when HTTP serving changes the topology. |
-| Testing | C | Unit tests cover CLI parsing/main flow, sampling edge cases, naive decode loop boundaries, and HF loader argument/dependency behavior; local no-torch environments skip torch-specific checks. | Add real-model smoke tests once CI has an appropriate runner or cached tiny model. |
+| Product surface | B | v0.1 exposes one causal LM through CLI plus OpenAI-compatible Responses, Chat Completions, Completions, and Models endpoints. | Add KV cache decode in v0.2 so the server has a real serving-performance concept. |
+| Architecture docs | B | Package boundaries and v0.1 CLI/HTTP runtime flows are documented. | Revisit when KV cache changes engine/model boundaries. |
+| Testing | B | Unit tests cover CLI parsing/main flow, protocol models, FastAPI endpoints including Responses, SSE chunking, sampling edge cases, naive decode loop boundaries, and HF loader behavior; local no-torch or no-FastAPI environments skip dependency-specific checks. | Add real-model HTTP smoke tests once CI has an appropriate runner or cached tiny model. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |
