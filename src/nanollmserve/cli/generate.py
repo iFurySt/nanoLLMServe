@@ -54,11 +54,14 @@ def main(argv: list[str] | None = None) -> int:
         print(
             "prompt_tokens={prompt_tokens} generated_tokens={generated_tokens} "
             "elapsed_seconds={elapsed_seconds:.3f} tokens_per_second={tokens_per_second:.2f} "
+            "ttft_seconds={ttft_seconds:.3f} tpot_seconds={tpot_seconds:.3f} "
             "device={device} dtype={dtype}".format(
                 prompt_tokens=result.prompt_tokens,
                 generated_tokens=result.generated_tokens,
                 elapsed_seconds=result.elapsed_seconds,
                 tokens_per_second=result.tokens_per_second,
+                ttft_seconds=result.ttft_seconds,
+                tpot_seconds=result.tpot_seconds,
                 device=loaded.device,
                 dtype=loaded.dtype,
             ),

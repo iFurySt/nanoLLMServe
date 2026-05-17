@@ -41,6 +41,8 @@ def test_cli_main_prints_text_and_stats(monkeypatch, capsys):
             generated_tokens=3,
             elapsed_seconds=0.5,
             tokens_per_second=6.0,
+            ttft_seconds=0.2,
+            tpot_seconds=0.15,
         )
 
     monkeypatch.setattr(generate_cli, "load_model_and_tokenizer", fake_load_model_and_tokenizer)
@@ -71,4 +73,5 @@ def test_cli_main_prints_text_and_stats(monkeypatch, capsys):
     assert exit_code == 0
     assert captured.out == "world\n"
     assert "prompt_tokens=1 generated_tokens=3" in captured.err
-    assert "tokens_per_second=6.00 device=cpu dtype=float32" in captured.err
+    assert "tokens_per_second=6.00 ttft_seconds=0.200 tpot_seconds=0.150" in captured.err
+    assert "device=cpu dtype=float32" in captured.err

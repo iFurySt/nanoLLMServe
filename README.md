@@ -24,9 +24,10 @@ understandable.
 Milestones live in [`docs/exec-plans/active/milestones`](./docs/exec-plans/active/milestones).
 
 Start with [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md),
-then expose it through the [`v0.1 OpenAI-compatible server`](./docs/exec-plans/active/milestones/v0.1-openai-compatible-server.md).
+expose it through the [`v0.1 OpenAI-compatible server`](./docs/exec-plans/active/milestones/v0.1-openai-compatible-server.md),
+then switch generation to [`v0.2 KV cache decode`](./docs/exec-plans/active/milestones/v0.2-kv-cache-decode.md).
 
-## v0.0 Quick Start
+## Quick Start
 
 Install the package in a virtual environment:
 
@@ -59,7 +60,13 @@ nanollm-generate \
   --show-stats
 ```
 
-Run the minimal benchmark:
+## v0.2 KV Cache Decode
+
+The default generation path now runs one prefill pass over the prompt and then
+uses Hugging Face `past_key_values` so each later decode step only receives the
+last generated token.
+
+Run the benchmark with a v0.0-style naive baseline comparison:
 
 ```bash
 python benchmarks/benchmark_generate.py \
@@ -68,6 +75,10 @@ python benchmarks/benchmark_generate.py \
   --runs 3 \
   --warmup 1
 ```
+
+The JSON output includes `kv_cache_decode.mean_ttft_seconds`,
+`kv_cache_decode.mean_tpot_seconds`, and a `comparison` section with elapsed and
+TPOT speedup against the naive full-sequence loop.
 
 ## v0.1 OpenAI-Compatible Server
 

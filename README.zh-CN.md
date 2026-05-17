@@ -22,9 +22,10 @@
 Milestone 放在 [`docs/exec-plans/active/milestones`](./docs/exec-plans/active/milestones)。
 
 从 [`v0.0-naive-single-request`](./docs/exec-plans/active/milestones/v0.0-naive-single-request.md) 开始，
-再进入 [`v0.1 OpenAI-compatible server`](./docs/exec-plans/active/milestones/v0.1-openai-compatible-server.md)。
+再进入 [`v0.1 OpenAI-compatible server`](./docs/exec-plans/active/milestones/v0.1-openai-compatible-server.md)，
+然后切到 [`v0.2 KV cache decode`](./docs/exec-plans/active/milestones/v0.2-kv-cache-decode.md)。
 
-## v0.0 Quick Start
+## Quick Start
 
 先创建隔离环境并安装：
 
@@ -57,7 +58,12 @@ nanollm-generate \
   --show-stats
 ```
 
-运行最小 benchmark：
+## v0.2 KV Cache Decode
+
+默认生成路径现在会先对 prompt 做一次 prefill forward，然后复用 Hugging Face
+`past_key_values`，后续每个 decode step 只喂最后一个生成 token。
+
+运行 benchmark，并和 v0.0 风格的 naive 全量重算路径对比：
 
 ```bash
 python benchmarks/benchmark_generate.py \
@@ -66,6 +72,10 @@ python benchmarks/benchmark_generate.py \
   --runs 3 \
   --warmup 1
 ```
+
+JSON 输出会包含 `kv_cache_decode.mean_ttft_seconds`、
+`kv_cache_decode.mean_tpot_seconds`，以及 `comparison` 里的 elapsed 和 TPOT
+speedup。
 
 ## v0.1 OpenAI-Compatible Server
 

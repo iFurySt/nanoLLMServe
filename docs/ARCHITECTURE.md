@@ -28,12 +28,12 @@ package boundaries before later milestones add serving complexity.
 - `scripts/`: repository automation that agents can run directly.
 - `docs/`: the repository knowledge base and system of record.
 
-The v0.1 runtime is intentionally a single-process Python service. It loads one
-Hugging Face causal LM, tokenizes one prompt, repeatedly runs the model over the
-full growing sequence, samples one token, and decodes only the generated tokens.
-The CLI and HTTP server both use this deliberately naive path so later
-milestones can make the performance reason for KV cache decode and batching
-visible.
+The v0.2 runtime is intentionally a single-process Python service. It loads one
+Hugging Face causal LM, tokenizes one prompt, runs a prefill forward over the
+prompt, then decodes later tokens by passing only the last generated token with
+`past_key_values`. The CLI and HTTP server both use this KV-cache path so the
+first serving-performance concept is visible before later batching and block
+management milestones.
 
 ## Target Package Layout
 
@@ -129,9 +129,11 @@ CLI args
   -> load_model_and_tokenizer()
   -> tokenizer(prompt)
   -> engine.generate_one()
-       -> model(input_ids, attention_mask)
-       -> sampling.sample_next_token()
-       -> append token
+       -> create GenerationRequestState
+       -> prefill: model(prompt input_ids, attention_mask, use_cache=True)
+       -> sample first token
+       -> decode: model(last token, attention_mask, past_key_values, use_cache=True)
+       -> sample and append each later token
   -> tokenizer.decode(generated_token_ids)
 
 HTTP JSON
@@ -143,9 +145,8 @@ HTTP JSON
 
 ## Known Gaps
 
-- No explicit KV cache handling yet; the current naive path relies on default
-  model behavior and recomputes the growing sequence to keep the baseline
-  readable.
+- KV cache reuse uses Hugging Face `past_key_values` directly; there is no paged
+  KV cache, block allocator, eviction, or prefix reuse yet.
 - No batching yet; all APIs are intentionally single prompt / single request.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
