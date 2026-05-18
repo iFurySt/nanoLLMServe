@@ -5,6 +5,7 @@ import pytest
 pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient
 
+from nanollmserve.api.protocol import ResponsesRequest, build_responses_response
 from nanollmserve.api.openai_server import build_parser, create_app
 from nanollmserve.model.hf_runner import LoadedModel
 
@@ -212,6 +213,7 @@ def test_responses_endpoint_returns_output_text_and_can_be_retrieved():
     retrieved = client.get(f"/v1/responses/{body['id']}")
     assert retrieved.status_code == 200
     assert retrieved.json()["id"] == body["id"]
+    assert retrieved.json()["status"] == "completed"
 
 
 def test_responses_endpoint_supports_message_list_input():
@@ -243,6 +245,44 @@ def test_responses_endpoint_supports_message_list_input():
     assert response.status_code == 200
     assert response.json()["output_text"] == "world"
     assert calls == ["user: hello\nassistant:"]
+
+
+def test_responses_endpoint_supports_previous_response_id():
+    calls = []
+
+    def fake_generate(model, tokenizer, prompt, *, max_new_tokens, temperature, seed):
+        calls.append(prompt)
+        return SimpleNamespace(
+            text=prompt,
+            prompt_tokens=0,
+            generated_tokens=0,
+            generated_token_ids=[],
+            elapsed_seconds=0.0,
+            finished=True,
+        )
+
+    app = create_app(loaded=_loaded_model(), served_model_name="toy-model", generate_fn=fake_generate)
+    client = TestClient(app)
+
+    first = client.post(
+        "/v1/responses",
+        json={"model": "toy-model", "input": "hello", "max_output_tokens": 2},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        "/v1/responses",
+        json={
+            "model": "toy-model",
+            "input": "again",
+            "max_output_tokens": 2,
+            "previous_response_id": first.json()["id"],
+        },
+    )
+
+    assert second.status_code == 200
+    assert second.json()["output_text"] == "hello\nagain"
+    assert calls == ["hello", "hello\nagain"]
 
 
 def test_responses_endpoint_rejects_unknown_model():
@@ -305,6 +345,20 @@ def test_responses_endpoint_rejects_tools_for_now():
     assert response.json()["error"]["code"] == "unsupported_feature"
 
 
+def test_responses_endpoint_rejects_background_for_now():
+    app = create_app(loaded=_loaded_model(), served_model_name="toy-model")
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/responses",
+        json={"model": "toy-model", "input": "hello", "background": True},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "unsupported_feature"
+    assert response.json()["error"]["param"] == "background"
+
+
 def test_responses_stream_emits_response_events():
     def fake_stream(model, tokenizer, prompt, *, max_new_tokens, temperature, seed):
         assert prompt == "hello"
@@ -350,6 +404,44 @@ def test_responses_stream_emits_response_events():
     assert '"delta":"B"' in response.text
     assert "event: response.completed" in response.text
     assert '"output_text":"AB"' in response.text
+    assert '"sequence_number":0' in response.text
+    assert '"sequence_number":1' in response.text
+    assert '"sequence_number":5' in response.text
+
+
+def test_cancel_response_endpoint_marks_response_as_cancelled():
+    app = create_app(loaded=_loaded_model(), served_model_name="toy-model")
+    app.state.nanollmserve.response_store["resp-live"] = build_responses_response(
+        ResponsesRequest(model="toy-model", input="seed"),
+        SimpleNamespace(
+            text="",
+            prompt_tokens=0,
+            generated_tokens=0,
+            generated_token_ids=[],
+            elapsed_seconds=0.0,
+            finished=False,
+        ),
+        response_id="resp-live",
+    )
+    client = TestClient(app)
+
+    cancelled = client.post("/v1/responses/resp-live/cancel")
+    assert cancelled.status_code == 200
+    assert cancelled.json()["status"] == "cancelled"
+
+    retrieved = client.get("/v1/responses/resp-live")
+    assert retrieved.status_code == 200
+    assert retrieved.json()["status"] == "cancelled"
+
+
+def test_cancel_response_endpoint_rejects_unknown_id():
+    app = create_app(loaded=_loaded_model(), served_model_name="toy-model")
+    client = TestClient(app)
+
+    response = client.post("/v1/responses/resp-missing/cancel")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "response_not_found"
 
 
 def test_serve_parser_accepts_minimal_args():

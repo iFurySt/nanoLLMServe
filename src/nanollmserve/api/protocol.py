@@ -62,6 +62,7 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: int = Field(default=16, ge=1)
     temperature: float = 0.0
     stream: bool = False
+    background: bool = False
     seed: int | None = None
     store: bool = True
     previous_response_id: str | None = None
@@ -125,7 +126,14 @@ class ResponseOutputText(BaseModel):
 class ResponseOutputMessage(BaseModel):
     id: str
     type: Literal["message"] = "message"
-    status: Literal["completed", "in_progress", "incomplete"] = "completed"
+    status: Literal[
+        "completed",
+        "in_progress",
+        "incomplete",
+        "queued",
+        "failed",
+        "cancelled",
+    ] = "completed"
     role: Literal["assistant"] = "assistant"
     content: list[ResponseOutputText]
 
@@ -134,7 +142,14 @@ class ResponsesResponse(BaseModel):
     id: str
     object: Literal["response"] = "response"
     created_at: int
-    status: Literal["completed", "in_progress", "incomplete"]
+    status: Literal[
+        "completed",
+        "in_progress",
+        "incomplete",
+        "queued",
+        "failed",
+        "cancelled",
+    ]
     model: str
     output: list[ResponseOutputMessage]
     output_text: str

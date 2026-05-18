@@ -138,7 +138,7 @@ def create_app(
         if unsupported_error is not None:
             return unsupported_error
 
-        prompt = responses_input_to_prompt(request)
+        prompt = _compose_responses_prompt(config, request)
         if request.stream:
             return StreamingResponse(
                 _responses_stream(config, request, prompt),
@@ -156,6 +156,21 @@ def create_app(
         response = build_responses_response(request, result)
         _store_response(config, response)
         return response
+
+    @app.post("/v1/responses/{response_id}/cancel")
+    def cancel_response(response_id: str):
+        if not config.response_store:
+            return _response_not_found(response_id)
+
+        stored = config.response_store.get(response_id)
+        if stored is None:
+            return _response_not_found(response_id)
+        if stored.status in {"completed", "failed", "cancelled"}:
+            return stored
+
+        stored.status = "cancelled"
+        config.response_store[response_id] = stored
+        return stored
 
     @app.get("/v1/responses/{response_id}")
     def retrieve_response(response_id: str):
@@ -195,6 +210,18 @@ def _validate_responses_request(config: ServerConfig, request: ResponsesRequest)
     except ImportError as exc:
         raise RuntimeError("FastAPI server dependencies are not installed") from exc
 
+    if request.background:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "error": {
+                    "message": "background is not supported by nanoLLMServe Responses API yet.",
+                    "type": "invalid_request_error",
+                    "param": "background",
+                    "code": "unsupported_feature",
+                }
+            },
+        )
     if request.tools:
         return JSONResponse(
             status_code=400,
@@ -210,6 +237,22 @@ def _validate_responses_request(config: ServerConfig, request: ResponsesRequest)
     if request.previous_response_id and request.previous_response_id not in (config.response_store or {}):
         return _response_not_found(request.previous_response_id)
     return None
+
+
+def _compose_responses_prompt(config: ServerConfig, request: ResponsesRequest) -> str:
+    prompt = responses_input_to_prompt(request)
+    if not request.previous_response_id:
+        return prompt
+    if not config.response_store:
+        return prompt
+
+    previous = config.response_store.get(request.previous_response_id)
+    if previous is None or not previous.output_text.strip():
+        return prompt
+
+    if prompt:
+        return previous.output_text + "\n" + prompt
+    return previous.output_text
 
 
 def _response_not_found(response_id: str):
@@ -234,6 +277,12 @@ def _response_not_found(response_id: str):
 def _store_response(config: ServerConfig, response: ResponsesResponse) -> None:
     if response.store and config.response_store is not None:
         config.response_store[response.id] = response
+
+
+def _stream_event(payload: dict, *, event: str | None = None, sequence_number: int = 0) -> str:
+    payload = dict(payload)
+    payload["sequence_number"] = sequence_number
+    return _sse_event(payload, event=event)
 
 
 def _completion_stream(config: ServerConfig, request: CompletionRequest):
@@ -308,6 +357,7 @@ def _chat_completion_stream(config: ServerConfig, request: ChatCompletionRequest
 def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: str):
     response_id = new_response_id("resp")
     created = now_timestamp()
+    sequence_number = 0
     skeleton = {
         "id": response_id,
         "object": "response",
@@ -317,13 +367,34 @@ def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: s
         "output": [],
         "output_text": "",
     }
-    yield _sse_event(
+    if request.store:
+        _store_response(
+            config,
+            build_responses_response(
+                request,
+                SimpleNamespace(
+                    text="",
+                    prompt_tokens=0,
+                    generated_tokens=0,
+                    generated_token_ids=[],
+                    elapsed_seconds=0.0,
+                    finished=False,
+                ),
+                response_id=response_id,
+                created_at=created,
+            ),
+        )
+
+    yield _stream_event(
         {"type": "response.created", "response": skeleton},
         event="response.created",
+        sequence_number=sequence_number,
     )
-    yield _sse_event(
+    sequence_number += 1
+    yield _stream_event(
         {"type": "response.in_progress", "response": skeleton},
         event="response.in_progress",
+        sequence_number=sequence_number,
     )
 
     steps = []
@@ -340,7 +411,8 @@ def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: s
         steps.append(step)
         if not yielded_content_part:
             yielded_content_part = True
-            yield _sse_event(
+            sequence_number += 1
+            yield _stream_event(
                 {
                     "type": "response.output_item.added",
                     "output_index": 0,
@@ -353,8 +425,10 @@ def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: s
                     },
                 },
                 event="response.output_item.added",
+                sequence_number=sequence_number,
             )
-            yield _sse_event(
+            sequence_number += 1
+            yield _stream_event(
                 {
                     "type": "response.content_part.added",
                     "output_index": 0,
@@ -363,8 +437,10 @@ def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: s
                     "part": {"type": "output_text", "text": "", "annotations": []},
                 },
                 event="response.content_part.added",
+                sequence_number=sequence_number,
             )
-        yield _sse_event(
+        sequence_number += 1
+        yield _stream_event(
             {
                 "type": "response.output_text.delta",
                 "output_index": 0,
@@ -373,37 +449,61 @@ def _responses_stream(config: ServerConfig, request: ResponsesRequest, prompt: s
                 "delta": step.text,
             },
             event="response.output_text.delta",
+            sequence_number=sequence_number,
         )
 
-    final_step = steps[-1]
-    result = SimpleNamespace(
-        text=final_step.generated_text,
-        prompt_tokens=final_step.prompt_tokens,
-        generated_tokens=final_step.generated_tokens,
-        generated_token_ids=final_step.generated_token_ids,
-        elapsed_seconds=final_step.elapsed_seconds,
-        finished=final_step.finished,
-    )
+    if steps:
+        final_step = steps[-1]
+        final_text = final_step.generated_text
+        final_generated_tokens = final_step.generated_tokens
+        final_prompt_tokens = final_step.prompt_tokens
+        final_generated_token_ids = final_step.generated_token_ids
+        final_elapsed_seconds = final_step.elapsed_seconds
+        final_finished = final_step.finished
+    else:
+        final_text = ""
+        final_generated_tokens = 0
+        final_prompt_tokens = 0
+        final_generated_token_ids = []
+        final_elapsed_seconds = 0.0
+        final_finished = False
+
     response = build_responses_response(
         request,
-        result,
+        SimpleNamespace(
+            text=final_text,
+            prompt_tokens=final_prompt_tokens,
+            generated_tokens=final_generated_tokens,
+            generated_token_ids=final_generated_token_ids,
+            elapsed_seconds=final_elapsed_seconds,
+            finished=final_finished,
+        ),
         response_id=response_id,
         created_at=created,
     )
+
+    if request.store:
+        stored = config.response_store.get(response_id)
+        if stored is not None and stored.status == "cancelled":
+            response.status = "cancelled"
     _store_response(config, response)
-    yield _sse_event(
+    sequence_number += 1
+    yield _stream_event(
         {
             "type": "response.output_text.done",
             "output_index": 0,
             "content_index": 0,
             "item_id": item_id,
-            "text": final_step.generated_text,
+            "text": final_text,
         },
         event="response.output_text.done",
+        sequence_number=sequence_number,
     )
-    yield _sse_event(
+    sequence_number += 1
+    yield _stream_event(
         {"type": "response.completed", "response": response.model_dump()},
         event="response.completed",
+        sequence_number=sequence_number,
     )
 
 

@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | B | v0.2 exposes one causal LM through CLI plus OpenAI-compatible HTTP endpoints with KV-cache prefill/decode; v0.3 static batching adds fixed-batch throughput path via benchmark path. | Add Responses tool/capability completeness and move Responses from subset-only support to full parity milestone implementation. |
+| Product surface | B | v0.2 exposes one causal LM through CLI plus OpenAI-compatible HTTP endpoints with KV-cache prefill/decode; v0.3 static batching adds fixed-batch throughput path via benchmark path. | Add Responses text-only continuation/cancel/stateful SSE work and continue toward tool/capability parity. |
 | Architecture docs | B | Package boundaries and runtime flow are documented with `generate_one` and new `generate_batch` static-batch semantics. | Revisit when batch scheduling boundaries shift toward continuous batching in v0.4. |
-| Testing | B | Unit tests now cover static-batch generation behavior and benchmark summarization paths; some model/tokenizer tests remain dependency-skipped without local torch/transformer runtime. | Add integration assertions for `/batch` or API-driven batch entry points once the API adds an explicit batch endpoint. |
+| Testing | B | Unit tests cover static-batch generation behavior, response lifecycle, response cancellation, continuation, and response SSE sequencing; some model/tokenizer tests remain dependency-skipped without local torch/transformer runtime. | Add tests for background execution and tool-call structured output as those runtimes are added. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |
