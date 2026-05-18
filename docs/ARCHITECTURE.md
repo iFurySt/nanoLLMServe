@@ -28,12 +28,18 @@ package boundaries before later milestones add serving complexity.
 - `scripts/`: repository automation that agents can run directly.
 - `docs/`: the repository knowledge base and system of record.
 
-The v0.2 runtime is intentionally a single-process Python service. It loads one
-Hugging Face causal LM, tokenizes one prompt, runs a prefill forward over the
-prompt, then decodes later tokens by passing only the last generated token with
-`past_key_values`. The CLI and HTTP server both use this KV-cache path so the
-first serving-performance concept is visible before later batching and block
-management milestones.
+The runtime now includes:
+
+- `v0.2` single-request path: tokenizes one prompt, runs a prefill forward over
+  the prompt, then decodes later tokens by passing only the last generated token
+  with `past_key_values`.
+- `v0.3` static batching path: tokenizes a fixed list of prompts with
+  padding/masks, runs one prefill pass over the batch, then performs lock-step
+  decode and finalizes when all rows finish or reach `max_new_tokens`.
+
+The CLI and HTTP server both use these engine paths. `generate_batch` is used by
+benchmarked static-batch scenarios while regular endpoints still call the
+single-request path by default.
 
 ## Target Package Layout
 
@@ -141,13 +147,25 @@ HTTP JSON
   -> api.openai_server FastAPI endpoint
   -> engine.generate_one() or engine.stream_generate_one()
   -> api.protocol response models or SSE chunks
+  
+Batch CLI path
+  -> CLI args or test harness
+  -> tokenizer(prompts, return_tensors="pt", padding=True)
+  -> engine.generate_batch()
+      -> prefill over full padded batch
+      -> sample first token from each row's last valid position
+      -> lock-step decode with past_key_values and growing attention masks
+      -> stop when all rows are finished or reached max_new_tokens
+      -> return row-wise GenerationResult
 ```
 
 ## Known Gaps
 
 - KV cache reuse uses Hugging Face `past_key_values` directly; there is no paged
   KV cache, block allocator, eviction, or prefix reuse yet.
-- No batching yet; all APIs are intentionally single prompt / single request.
+- Static batching exists for a fixed batch size in `engine.generate_batch` and
+  benchmark coverage. Mid-batch admission, per-row rebuilding, and continuous
+  scheduling are not implemented yet.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
   does not implement auth, tools, background Responses runs, Responses cancel,

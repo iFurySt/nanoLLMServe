@@ -77,6 +77,21 @@ JSON 输出会包含 `kv_cache_decode.mean_ttft_seconds`、
 `kv_cache_decode.mean_tpot_seconds`，以及 `comparison` 里的 elapsed 和 TPOT
 speedup。
 
+## v0.3 静态批处理（教学规模）
+
+固定批大小静态批处理通过 `--batch-size` 开启（1 即退化为单请求）：
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --batch-size 4 \
+  --runs 5 \
+  --warmup 2
+```
+
+JSON 结果会新增 `static_batch`，包含固定批次下的耗时、TTFT、TPOT 与行级吞吐统计。
+
 ## v0.1 OpenAI-Compatible Server
 
 启动一个只服务单个本地或 Hugging Face causal LM 的 HTTP server：

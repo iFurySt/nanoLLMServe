@@ -23,7 +23,7 @@ Build a readable LLM serving engine through small, runnable milestones.
 - [x] [`v0.0` naive single request](./milestones/v0.0-naive-single-request.md)
 - [x] [`v0.1` OpenAI-compatible server](./milestones/v0.1-openai-compatible-server.md)
 - [x] [`v0.2` KV cache decode](./milestones/v0.2-kv-cache-decode.md)
-- [ ] [`v0.3` static batching](./milestones/v0.3-static-batching.md)
+- [x] [`v0.3` static batching](./milestones/v0.3-static-batching.md)
 - [ ] [`v0.4` continuous batching](./milestones/v0.4-continuous-batching.md)
 - [ ] [`v0.5` block KV cache manager](./milestones/v0.5-block-kv-cache-manager.md)
 - [ ] [`v0.6` prefix cache](./milestones/v0.6-prefix-cache.md)

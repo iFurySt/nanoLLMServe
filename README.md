@@ -80,6 +80,22 @@ The JSON output includes `kv_cache_decode.mean_ttft_seconds`,
 `kv_cache_decode.mean_tpot_seconds`, and a `comparison` section with elapsed and
 TPOT speedup against the naive full-sequence loop.
 
+## v0.3 Static Batching (Teaching-Scale)
+
+You can benchmark fixed-size static batching with `--batch-size`:
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --batch-size 4 \
+  --runs 5 \
+  --warmup 2
+```
+
+The output will include `static_batch`, including batch elapsed time and mean
+row-level token throughput for the fixed-size group.
+
 ## v0.1 OpenAI-Compatible Server
 
 Serve one local or Hugging Face causal LM:

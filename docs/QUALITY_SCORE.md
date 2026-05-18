@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | B | v0.2 exposes one causal LM through CLI plus OpenAI-compatible HTTP endpoints and now uses KV-cache prefill/decode instead of full-sequence recompute. | Add static batching in v0.3 so multiple prompts can share one model step. |
-| Architecture docs | B | Package boundaries and v0.2 CLI/HTTP runtime flows are documented, including request state and direct Hugging Face `past_key_values` reuse. | Revisit when static batching changes request lifecycle and scheduler boundaries. |
-| Testing | B | Unit tests cover CLI parsing/main flow, protocol models, FastAPI endpoints including Responses, SSE chunking, sampling edge cases, KV-cache decode behavior, and HF loader behavior; local no-torch or no-FastAPI environments skip dependency-specific checks. | Add automated real-model HTTP smoke tests once CI has an appropriate runner or cached tiny model. |
+| Product surface | B | v0.2 exposes one causal LM through CLI plus OpenAI-compatible HTTP endpoints with KV-cache prefill/decode; v0.3 static batching adds fixed-batch throughput path via benchmark path. | Add Responses tool/capability completeness and move Responses from subset-only support to full parity milestone implementation. |
+| Architecture docs | B | Package boundaries and runtime flow are documented with `generate_one` and new `generate_batch` static-batch semantics. | Revisit when batch scheduling boundaries shift toward continuous batching in v0.4. |
+| Testing | B | Unit tests now cover static-batch generation behavior and benchmark summarization paths; some model/tokenizer tests remain dependency-skipped without local torch/transformer runtime. | Add integration assertions for `/batch` or API-driven batch entry points once the API adds an explicit batch endpoint. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |

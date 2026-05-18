@@ -7,7 +7,7 @@ import json
 from statistics import mean
 from time import perf_counter
 
-from nanollmserve.engine.engine import generate_one
+from nanollmserve.engine.engine import generate_batch, generate_one
 from nanollmserve.model.hf_runner import load_model_and_tokenizer
 from nanollmserve.sampling.sampler import sample_next_token
 
@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--warmup", type=int, default=1)
+    parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--device", default="auto")
     parser.add_argument("--dtype", default="auto")
     parser.add_argument("--local-files-only", action="store_true")
@@ -37,6 +38,8 @@ def main() -> int:
         raise ValueError("--runs must be at least 1")
     if args.warmup < 0:
         raise ValueError("--warmup must be non-negative")
+    if args.batch_size < 1:
+        raise ValueError("--batch-size must be at least 1")
 
     loaded = load_model_and_tokenizer(
         args.model,
@@ -44,6 +47,8 @@ def main() -> int:
         dtype=args.dtype,
         local_files_only=args.local_files_only,
     )
+
+    batch_prompts = [args.prompt] * args.batch_size
 
     for _ in range(args.warmup):
         generate_one(
@@ -53,6 +58,14 @@ def main() -> int:
             max_new_tokens=args.max_new_tokens,
             temperature=args.temperature,
         )
+        if args.batch_size > 1:
+            _ = generate_batch(
+                loaded.model,
+                loaded.tokenizer,
+                batch_prompts,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+            )
         if not args.skip_naive_baseline:
             _generate_one_naive(
                 loaded.model,
@@ -78,9 +91,24 @@ def main() -> int:
         "dtype": loaded.dtype,
         "runs": args.runs,
         "warmup": args.warmup,
+        "batch_size": args.batch_size,
         "prompt_tokens": kv_results[-1].prompt_tokens,
         "kv_cache_decode": _summarize(kv_results),
     }
+
+    if args.batch_size > 1:
+        batch_results = [
+            generate_batch(
+                loaded.model,
+                loaded.tokenizer,
+                batch_prompts,
+                max_new_tokens=args.max_new_tokens,
+                temperature=args.temperature,
+            )
+            for _ in range(args.runs)
+        ]
+        payload["static_batch"] = _summarize_batch(batch_results)
+
     if not args.skip_naive_baseline:
         naive_results = [
             _generate_one_naive(
@@ -118,6 +146,37 @@ def _summarize(results) -> dict:
         "mean_tpot_seconds": mean(item.tpot_seconds for item in results),
         "mean_prefill_seconds": mean(item.prefill_seconds for item in results),
         "mean_decode_seconds": mean(item.decode_seconds for item in results),
+    }
+
+
+def _summarize_batch(batch_runs) -> dict:
+    if not batch_runs:
+        return {}
+
+    batch_elapsed_seconds = [run[0].elapsed_seconds for run in batch_runs]
+    all_generated = [result.generated_tokens for run in batch_runs for result in run]
+    all_prompt_tokens = [result.prompt_tokens for run in batch_runs for result in run]
+    all_ttft = [result.ttft_seconds for run in batch_runs for result in run if result.generated_tokens > 0]
+    all_tpot = [result.tpot_seconds for run in batch_runs for result in run if result.generated_tokens > 1]
+    all_prefill = [result.prefill_seconds for run in batch_runs for result in run]
+    all_decode = [result.decode_seconds for run in batch_runs for result in run]
+
+    return {
+        "batch_size": len(batch_runs[0]),
+        "generated_tokens": [result.generated_tokens for run in batch_runs for result in run],
+        "mean_batch_elapsed_seconds": mean(batch_elapsed_seconds),
+        "mean_batch_tokens_per_second": mean(
+            [
+                sum(result.generated_tokens for result in run) / run[0].elapsed_seconds
+                for run in batch_runs
+            ]
+        ),
+        "mean_prompt_tokens": mean(all_prompt_tokens),
+        "mean_generated_tokens": mean(all_generated),
+        "mean_ttft_seconds": mean(all_ttft),
+        "mean_tpot_seconds": mean(all_tpot) if all_tpot else 0.0,
+        "mean_prefill_seconds": mean(all_prefill),
+        "mean_decode_seconds": mean(all_decode),
     }
 
 

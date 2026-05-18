@@ -4,7 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from nanollmserve.engine.engine import generate_one, stream_generate_one
+from nanollmserve.engine.engine import generate_batch, generate_one, stream_generate_one
 
 
 class FakeTokenizer:
@@ -14,7 +14,7 @@ class FakeTokenizer:
         self.include_attention_mask = include_attention_mask
 
     def __call__(self, prompt, return_tensors):
-        assert prompt == "hello"
+        assert isinstance(prompt, str)
         assert return_tensors == "pt"
         batch = {
             "input_ids": torch.tensor([[5, 1]], dtype=torch.long),
@@ -26,6 +26,45 @@ class FakeTokenizer:
     def decode(self, token_ids, skip_special_tokens=True):
         values = [item for item in token_ids if not skip_special_tokens or item != self.eos_token_id]
         return "".join({2: "A", 3: "B"}.get(item, "") for item in values)
+
+
+class FakeBatchTokenizer:
+    eos_token_id = 9
+
+    def __call__(self, prompts, return_tensors, padding=False, **kwargs):
+        assert isinstance(prompts, list)
+        assert return_tensors == "pt"
+        assert padding is True
+        assert len(prompts) == 2
+        assert prompts == ["hello", "world"]
+        return {
+            "input_ids": torch.tensor(
+                [
+                    [5, 1, 0],
+                    [8, 2, 0],
+                ],
+                dtype=torch.long,
+            ),
+            "attention_mask": torch.tensor(
+                [
+                    [1, 1, 0],
+                    [1, 1, 0],
+                ],
+                dtype=torch.long,
+            ),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        output = {
+            2: "A",
+            3: "B",
+            4: "C",
+            5: "D",
+            7: "E",
+            8: "F",
+        }
+        filtered = [value for value in token_ids if not skip_special_tokens or value != self.eos_token_id]
+        return "".join(output.get(item, "") for item in filtered)
 
 
 class FakeModel:
@@ -49,9 +88,39 @@ class FakeModel:
         self.past_key_values.append(past_key_values)
         self.use_cache_values.append(use_cache)
         vocab_size = 10
-        logits = torch.full((*input_ids.shape, vocab_size), -100.0)
+        logits = torch.full((*input_ids.shape, vocab_size), -100.0, device=input_ids.device)
         next_id = {1: 2, 2: 3}.get(self.call_count, 9)
         logits[:, -1, next_id] = 100.0
+        return SimpleNamespace(logits=logits, past_key_values=(f"kv-{self.call_count}",))
+
+
+class FakeBatchModel:
+    def __init__(self, next_token_schedule):
+        self.next_token_schedule = next_token_schedule
+        self.call_count = 0
+        self.call_inputs = []
+        self.call_attention_masks = []
+        self.call_use_cache = []
+        self.call_past_key_values = []
+
+    def parameters(self):
+        return iter(())
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, attention_mask, past_key_values=None, use_cache=False):
+        self.call_count += 1
+        self.call_inputs.append(input_ids.clone())
+        self.call_attention_masks.append(attention_mask.clone())
+        self.call_use_cache.append(use_cache)
+        self.call_past_key_values.append(past_key_values)
+
+        vocab_size = 10
+        logits = torch.full((*input_ids.shape, vocab_size), -100.0, device=input_ids.device)
+        next_ids = self.next_token_schedule[min(self.call_count, len(self.next_token_schedule) - 1)]
+        for idx, token_id in enumerate(next_ids):
+            logits[idx, -1, int(token_id)] = 100.0
         return SimpleNamespace(logits=logits, past_key_values=(f"kv-{self.call_count}",))
 
 
@@ -155,3 +224,76 @@ def test_stream_generate_one_yields_incremental_tokens():
     assert [step.generated_text for step in steps] == ["A", "AB", "AB"]
     assert [step.generated_token_ids for step in steps] == [[2], [2, 3], [2, 3, 9]]
     assert steps[-1].finished is True
+
+
+def test_generate_batch_prefill_and_decode_all_requests_together():
+    model = FakeBatchModel(
+        next_token_schedule=[
+            [2, 4],
+            [3, 5],
+            [9, 6],
+        ]
+    )
+
+    results = generate_batch(
+        model,
+        FakeBatchTokenizer(),
+        ["hello", "world"],
+        max_new_tokens=3,
+        temperature=0.0,
+    )
+
+    assert [result.generated_token_ids for result in results] == [[2, 3, 9], [4, 5, 6]]
+    assert [result.generated_tokens for result in results] == [3, 3]
+    assert [result.finished for result in results] == [True, False]
+    assert model.call_inputs[0].shape == (2, 3)
+    assert model.call_inputs[1].shape == (2, 1)
+    assert model.call_inputs[2].shape == (2, 1)
+    assert model.call_attention_masks[1].shape == (2, 4)
+    assert model.call_attention_masks[2].shape == (2, 5)
+    assert model.call_use_cache == [True, True, True]
+
+
+def test_generate_batch_keeps_finished_request_from_growing():
+    model = FakeBatchModel(
+        next_token_schedule=[
+            [2, 4],
+            [9, 5],
+            [9, 6],
+            [9, 7],
+        ]
+    )
+
+    results = generate_batch(
+        model,
+        FakeBatchTokenizer(),
+        ["hello", "world"],
+        max_new_tokens=4,
+        temperature=0.0,
+    )
+
+    assert results[0].generated_token_ids == [2]
+    assert results[0].text == "A"
+    assert results[0].finished is True
+    assert len(results[1].generated_token_ids) == 4
+    assert results[1].text == "CDFG"
+
+
+def test_generate_batch_rejects_empty_prompts():
+    with pytest.raises(ValueError, match="prompts"):
+        generate_batch(
+            FakeBatchModel([[2]]),
+            FakeBatchTokenizer(),
+            [],
+            max_new_tokens=1,
+        )
+
+
+def test_generate_batch_rejects_empty_prompt_entries():
+    with pytest.raises(ValueError, match="non-empty"):
+        generate_batch(
+            FakeBatchModel([[2, 2]]),
+            FakeBatchTokenizer(),
+            ["", "world"],
+            max_new_tokens=1,
+        )
