@@ -79,7 +79,7 @@ def create_app(
         response_store={},
     )
 
-    app = FastAPI(title="nanoLLMServe", version="0.2.0")
+    app = FastAPI(title="nanoLLMServe", version="0.3.1")
     app.state.nanollmserve = config
 
     @app.get("/v1/models", response_model=ListModelsResponse)
