@@ -405,7 +405,10 @@ def _append_batch_step(
             continue
         state.generated_token_ids.append(token_id)
         state.attention_mask = torch.cat(
-            [state.attention_mask, next_token_ids[index : index + 1, :].to(state.attention_mask.device)],
+            [
+                state.attention_mask,
+                torch.ones(1, dtype=state.attention_mask.dtype, device=state.attention_mask.device),
+            ],
             dim=-1,
         )
         if start is not None and is_first and state.generated_tokens == 1:

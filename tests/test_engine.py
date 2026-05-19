@@ -118,9 +118,11 @@ class FakeBatchModel:
 
         vocab_size = 10
         logits = torch.full((*input_ids.shape, vocab_size), -100.0, device=input_ids.device)
-        next_ids = self.next_token_schedule[min(self.call_count, len(self.next_token_schedule) - 1)]
+        schedule_index = min(self.call_count - 1, len(self.next_token_schedule) - 1)
+        next_ids = self.next_token_schedule[schedule_index]
         for idx, token_id in enumerate(next_ids):
-            logits[idx, -1, int(token_id)] = 100.0
+            last_index = int(attention_mask[idx].sum().item()) - 1 if past_key_values is None else -1
+            logits[idx, last_index, int(token_id)] = 100.0
         return SimpleNamespace(logits=logits, past_key_values=(f"kv-{self.call_count}",))
 
 
@@ -272,11 +274,10 @@ def test_generate_batch_keeps_finished_request_from_growing():
         temperature=0.0,
     )
 
-    assert results[0].generated_token_ids == [2]
+    assert results[0].generated_token_ids == [2, 9]
     assert results[0].text == "A"
     assert results[0].finished is True
-    assert len(results[1].generated_token_ids) == 4
-    assert results[1].text == "CDFG"
+    assert results[1].generated_token_ids == [4, 5, 6, 7]
 
 
 def test_generate_batch_rejects_empty_prompts():
