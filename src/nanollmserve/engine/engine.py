@@ -8,6 +8,11 @@ from time import perf_counter
 import torch
 
 from nanollmserve.engine.request import GenerationRequestState
+from nanollmserve.engine.scheduler import (
+    ContinuousBatchRequest,
+    ContinuousBatchScheduler,
+    SchedulerStepStats,
+)
 from nanollmserve.sampling.sampler import sample_next_token
 
 
@@ -47,6 +52,25 @@ class GenerationStep:
     prefill_seconds: float
     decode_seconds: float
     finished: bool
+
+
+@dataclass(frozen=True)
+class ContinuousBatchGenerationResult:
+    request_id: str
+    result: GenerationResult
+    arrival_step: int
+    admitted_step: int
+    finished_step: int
+
+
+@dataclass(frozen=True)
+class ContinuousBatchRunResult:
+    results: list[ContinuousBatchGenerationResult]
+    scheduler_steps: list[SchedulerStepStats]
+
+    @property
+    def active_batch_sizes(self) -> list[int]:
+        return [step.active_batch_size for step in self.scheduler_steps]
 
 
 def _model_device(model):
@@ -249,6 +273,128 @@ def generate_batch(
     return [_finalize_batch_state(state, tokenizer, elapsed=elapsed) for state in states]
 
 
+def generate_continuous_batch(
+    model,
+    tokenizer,
+    requests: list[ContinuousBatchRequest],
+    *,
+    max_batch_size: int | None = None,
+    temperature: float = 0.0,
+    seed: int | None = None,
+) -> ContinuousBatchRunResult:
+    """Generate requests with teaching-scale continuous batching.
+
+    New requests are admitted by ``arrival_step`` while existing requests keep
+    decoding. Each scheduler step rebuilds a padded full-token batch from the
+    current running set, then removes completed rows before the next step.
+    """
+
+    if not requests:
+        raise ValueError("requests must contain at least one entry")
+
+    scheduler = ContinuousBatchScheduler(requests=requests, max_batch_size=max_batch_size)
+    request_by_id = {request.request_id: request for request in requests}
+    states: dict[str, GenerationRequestState] = {}
+    admitted_at: dict[str, float] = {}
+    finished_at: dict[str, float] = {}
+    scheduler_steps: list[SchedulerStepStats] = []
+    eos_token_ids = _eos_token_ids(tokenizer)
+
+    device = _model_device(model)
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+    start = perf_counter()
+    model.eval()
+    step = 0
+    with torch.inference_mode():
+        while scheduler.has_work():
+            if not scheduler.running and scheduler.next_arrival_step() is not None:
+                step = max(step, scheduler.next_arrival_step())
+
+            admitted = scheduler.admit(step)
+            for scheduled in admitted:
+                states[scheduled.request.request_id] = _state_from_prompt(
+                    tokenizer,
+                    scheduled.request.prompt,
+                    device,
+                )
+                admitted_at[scheduled.request.request_id] = perf_counter()
+
+            running_ids = [state.request.request_id for state in scheduler.running]
+            if not running_ids:
+                continue
+
+            batch = _continuous_batch_tensors(states, running_ids, tokenizer, device)
+            batch_start = perf_counter()
+            outputs = model(
+                input_ids=batch["input_ids"],
+                attention_mask=batch["attention_mask"],
+                use_cache=False,
+            )
+            batch_elapsed = perf_counter() - batch_start
+            next_logits = _select_last_token_logits(outputs.logits, batch["attention_mask"])
+            next_tokens = _sample_from_logits(
+                next_logits,
+                temperature=temperature,
+                generator=generator,
+            )
+
+            completed_ids: set[str] = set()
+            for index, request_id in enumerate(running_ids):
+                state = states[request_id]
+                request = request_by_id[request_id]
+                token_id = int(next_tokens[index, 0].item())
+                state.generated_token_ids.append(token_id)
+                state.attention_mask = torch.cat(
+                    [
+                        state.attention_mask,
+                        torch.ones(1, dtype=state.attention_mask.dtype, device=state.attention_mask.device),
+                    ],
+                    dim=-1,
+                )
+                if state.generated_tokens == 1:
+                    state.ttft_seconds = perf_counter() - admitted_at[request_id]
+                    state.prefill_seconds += batch_elapsed
+                else:
+                    state.decode_seconds += batch_elapsed
+                if token_id in eos_token_ids or state.generated_tokens >= request.max_new_tokens:
+                    state.finished = token_id in eos_token_ids
+                    completed_ids.add(request_id)
+                    finished_at[request_id] = perf_counter()
+
+            completed = scheduler.finish(completed_ids, step)
+            scheduler_steps.append(
+                scheduler.record_step(
+                    step=step,
+                    admitted=admitted,
+                    running_request_ids=running_ids,
+                    completed=completed,
+                )
+            )
+            step += 1
+
+    results: list[ContinuousBatchGenerationResult] = []
+    finished_by_id = {state.request.request_id: state for state in scheduler.finished}
+    for request in requests:
+        state = states[request.request_id]
+        scheduled = finished_by_id[request.request_id]
+        elapsed = finished_at[request.request_id] - admitted_at[request.request_id]
+        results.append(
+            ContinuousBatchGenerationResult(
+                request_id=request.request_id,
+                result=_finalize_batch_state(state, tokenizer, elapsed=elapsed),
+                arrival_step=request.arrival_step,
+                admitted_step=scheduled.admitted_step if scheduled.admitted_step is not None else request.arrival_step,
+                finished_step=scheduled.finished_step if scheduled.finished_step is not None else step,
+            )
+        )
+
+    return ContinuousBatchRunResult(results=results, scheduler_steps=scheduler_steps)
+
+
 def stream_generate_one(
     model,
     tokenizer,
@@ -365,6 +511,61 @@ def _finalize_batch_state(
         decode_seconds=state.decode_seconds,
         finished=state.finished,
     )
+
+
+def _state_from_prompt(tokenizer, prompt: str, device) -> GenerationRequestState:
+    encoded = tokenizer(prompt, return_tensors="pt")
+    encoded = _move_batch_to_device(encoded, device)
+    input_ids = encoded["input_ids"]
+    attention_mask = encoded.get("attention_mask")
+    if attention_mask is None:
+        attention_mask = torch.ones_like(input_ids)
+
+    prompt_token_ids = [int(token_id) for token_id in input_ids[0].tolist()]
+    valid_length = int(attention_mask[0].sum().item())
+    return GenerationRequestState(
+        prompt=prompt,
+        prompt_token_ids=prompt_token_ids[:valid_length],
+        attention_mask=attention_mask[0, :valid_length].to(dtype=torch.long).clone(),
+    )
+
+
+def _continuous_batch_tensors(
+    states: dict[str, GenerationRequestState],
+    running_ids: list[str],
+    tokenizer,
+    device,
+) -> dict:
+    sequences: list[list[int]] = []
+    max_length = 0
+    for request_id in running_ids:
+        state = states[request_id]
+        sequence = state.prompt_token_ids + state.generated_token_ids
+        sequences.append(sequence)
+        max_length = max(max_length, len(sequence))
+
+    pad_token_id = _pad_token_id(tokenizer)
+    input_rows: list[list[int]] = []
+    mask_rows: list[list[int]] = []
+    for sequence in sequences:
+        pad_length = max_length - len(sequence)
+        input_rows.append(sequence + [pad_token_id] * pad_length)
+        mask_rows.append([1] * len(sequence) + [0] * pad_length)
+
+    return {
+        "input_ids": torch.tensor(input_rows, dtype=torch.long, device=device),
+        "attention_mask": torch.tensor(mask_rows, dtype=torch.long, device=device),
+    }
+
+
+def _pad_token_id(tokenizer) -> int:
+    pad_token_id = getattr(tokenizer, "pad_token_id", None)
+    if pad_token_id is not None:
+        return int(pad_token_id)
+    eos_token_id = getattr(tokenizer, "eos_token_id", None)
+    if isinstance(eos_token_id, int):
+        return eos_token_id
+    return 0
 
 
 def _sample_from_outputs(outputs, *, temperature: float, generator):

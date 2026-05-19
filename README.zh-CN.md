@@ -92,6 +92,26 @@ python benchmarks/benchmark_generate.py \
 
 JSON 结果会新增 `static_batch`，包含固定批次下的耗时、TTFT、TPOT 与行级吞吐统计。
 
+## v0.4 连续批处理（教学规模）
+
+当 `--batch-size` 大于 1 时，benchmark 现在也会跑一条教学规模的 continuous
+batching 路径。它按 scheduler step 接收新请求，每一步重建 active batch，并报告
+active batch size：
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --batch-size 4 \
+  --runs 5 \
+  --warmup 2 \
+  --skip-naive-baseline
+```
+
+JSON 结果会包含 `continuous_batch.active_batch_sizes` 和
+`continuous_batch.mean_active_batch_size`。这个里程碑会重算 active rows 的完整
+token 序列；动态行的 paged KV cache 留给 v0.5。
+
 ## v0.1 OpenAI-Compatible Server
 
 启动一个只服务单个本地或 Hugging Face causal LM 的 HTTP server：

@@ -96,6 +96,26 @@ python benchmarks/benchmark_generate.py \
 The output will include `static_batch`, including batch elapsed time and mean
 row-level token throughput for the fixed-size group.
 
+## v0.4 Continuous Batching (Teaching-Scale)
+
+When `--batch-size` is greater than 1, the benchmark now also runs a
+teaching-scale continuous batching path. It admits requests over scheduler
+steps, rebuilds the active batch each step, and reports active batch sizes:
+
+```bash
+python benchmarks/benchmark_generate.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --batch-size 4 \
+  --runs 5 \
+  --warmup 2 \
+  --skip-naive-baseline
+```
+
+The output includes `continuous_batch.active_batch_sizes` and
+`continuous_batch.mean_active_batch_size`. This milestone intentionally
+recomputes full active rows; paged KV cache for dynamic rows belongs to v0.5.
+
 ## v0.1 OpenAI-Compatible Server
 
 Serve one local or Hugging Face causal LM:

@@ -10,7 +10,12 @@ if str(ROOT) not in sys.path:
 
 pytest.importorskip("torch")
 
-from benchmarks.benchmark_generate import _ratio, _summarize, _summarize_batch
+from benchmarks.benchmark_generate import (
+    _ratio,
+    _summarize,
+    _summarize_batch,
+    _summarize_continuous_batch,
+)
 
 
 def test_benchmark_summarize_reports_ttft_tpot_and_decode_metrics():
@@ -67,3 +72,38 @@ def test_summarize_batch_aggregates_per_request_rows():
     assert summary["generated_tokens"] == [2, 3, 1, 2]
     assert summary["mean_batch_elapsed_seconds"] == 0.9
     assert summary["mean_batch_tokens_per_second"] == ((2 + 3) / 1.0 + (1 + 2) / 0.8) / 2
+
+
+def test_summarize_continuous_batch_reports_scheduler_sizes():
+    run = SimpleNamespace(
+        results=[
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    generated_tokens=2,
+                    elapsed_seconds=1.0,
+                    tokens_per_second=2.0,
+                )
+            ),
+            SimpleNamespace(
+                result=SimpleNamespace(
+                    generated_tokens=3,
+                    elapsed_seconds=1.5,
+                    tokens_per_second=2.0,
+                )
+            ),
+        ],
+        scheduler_steps=[
+            SimpleNamespace(active_batch_size=1),
+            SimpleNamespace(active_batch_size=2),
+            SimpleNamespace(active_batch_size=1),
+        ],
+    )
+
+    summary = _summarize_continuous_batch([run])
+
+    assert summary["request_count"] == 2
+    assert summary["mean_generated_tokens"] == 2.5
+    assert summary["active_batch_sizes"] == [1, 2, 1]
+    assert summary["max_active_batch_size"] == 2
+    assert summary["mean_active_batch_size"] == pytest.approx(4 / 3)
+    assert summary["scheduler_steps"] == 3

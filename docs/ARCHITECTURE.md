@@ -36,10 +36,14 @@ The runtime now includes:
 - `v0.3` static batching path: tokenizes a fixed list of prompts with
   padding/masks, runs one prefill pass over the batch, then performs lock-step
   decode and finalizes when all rows finish or reach `max_new_tokens`.
+- `v0.4` continuous batching path: admits requests by scheduler step, keeps
+  waiting/running/finished request lifecycle state, rebuilds a padded active
+  batch each decode step, records active batch size metrics, and removes
+  completed rows without stopping the scheduler.
 
-The CLI and HTTP server both use these engine paths. `generate_batch` is used by
-benchmarked static-batch scenarios while regular endpoints still call the
-single-request path by default.
+The CLI and HTTP server both use the single-request path. `generate_batch` and
+`generate_continuous_batch` are used by benchmarked batching scenarios while
+regular endpoints still call the single-request path by default.
 
 ## Target Package Layout
 
@@ -157,15 +161,26 @@ Batch CLI path
       -> lock-step decode with past_key_values and growing attention masks
       -> stop when all rows are finished or reached max_new_tokens
       -> return row-wise GenerationResult
+
+Continuous batch benchmark path
+  -> benchmark creates ContinuousBatchRequest rows with arrival_step
+  -> engine.generate_continuous_batch()
+      -> ContinuousBatchScheduler moves rows waiting -> running -> finished
+      -> each scheduler step rebuilds a padded full-token active batch
+      -> model(active input_ids, attention_mask, use_cache=False)
+      -> sample one token per active row
+      -> completed rows leave the running set before the next step
+      -> return per-request results plus active_batch_size step metrics
 ```
 
 ## Known Gaps
 
 - KV cache reuse uses Hugging Face `past_key_values` directly; there is no paged
   KV cache, block allocator, eviction, or prefix reuse yet.
-- Static batching exists for a fixed batch size in `engine.generate_batch` and
-  benchmark coverage. Mid-batch admission, per-row rebuilding, and continuous
-  scheduling are not implemented yet.
+- Static batching exists for a fixed batch size in `engine.generate_batch`.
+  Continuous batching exists at scheduler level in `generate_continuous_batch`,
+  but it intentionally rebuilds full-token active batches and does not yet carry
+  per-row paged KV cache across dynamic batch rebuilds.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
   does not implement auth, tools, background Responses runs, Responses cancel,

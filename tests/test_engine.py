@@ -4,7 +4,13 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
-from nanollmserve.engine.engine import generate_batch, generate_one, stream_generate_one
+from nanollmserve.engine.engine import (
+    generate_batch,
+    generate_continuous_batch,
+    generate_one,
+    stream_generate_one,
+)
+from nanollmserve.engine.scheduler import ContinuousBatchRequest
 
 
 class FakeTokenizer:
@@ -124,6 +130,71 @@ class FakeBatchModel:
             last_index = int(attention_mask[idx].sum().item()) - 1 if past_key_values is None else -1
             logits[idx, last_index, int(token_id)] = 100.0
         return SimpleNamespace(logits=logits, past_key_values=(f"kv-{self.call_count}",))
+
+
+class FakeContinuousTokenizer:
+    eos_token_id = 9
+    pad_token_id = 0
+
+    prompt_tokens = {
+        "short": [1, 1],
+        "late": [4, 4],
+    }
+
+    def __call__(self, prompt, return_tensors):
+        assert isinstance(prompt, str)
+        assert return_tensors == "pt"
+        return {
+            "input_ids": torch.tensor([self.prompt_tokens[prompt]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1] * len(self.prompt_tokens[prompt])], dtype=torch.long),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        output = {
+            2: "A",
+            3: "B",
+            5: "C",
+            6: "D",
+        }
+        filtered = [value for value in token_ids if not skip_special_tokens or value != self.eos_token_id]
+        return "".join(output.get(item, "") for item in filtered)
+
+
+class FakeContinuousModel:
+    prompt_lengths = {
+        1: 2,
+        4: 2,
+    }
+    token_schedule = {
+        1: [2, 9],
+        4: [5, 6, 9],
+    }
+
+    def __init__(self):
+        self.call_inputs = []
+        self.call_attention_masks = []
+        self.call_use_cache = []
+
+    def parameters(self):
+        return iter(())
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, attention_mask, use_cache=False, **kwargs):
+        self.call_inputs.append(input_ids.clone())
+        self.call_attention_masks.append(attention_mask.clone())
+        self.call_use_cache.append(use_cache)
+
+        vocab_size = 10
+        logits = torch.full((*input_ids.shape, vocab_size), -100.0, device=input_ids.device)
+        for row in range(input_ids.shape[0]):
+            prompt_id = int(input_ids[row, 0].item())
+            valid_length = int(attention_mask[row].sum().item())
+            generated_count = valid_length - self.prompt_lengths[prompt_id]
+            next_token = self.token_schedule[prompt_id][generated_count]
+            logits[row, valid_length - 1, next_token] = 100.0
+        return SimpleNamespace(logits=logits)
 
 
 def test_generate_one_runs_until_eos():
@@ -297,4 +368,58 @@ def test_generate_batch_rejects_empty_prompt_entries():
             FakeBatchTokenizer(),
             ["", "world"],
             max_new_tokens=1,
+        )
+
+
+def test_generate_continuous_batch_admits_new_request_while_decoding():
+    model = FakeContinuousModel()
+
+    run = generate_continuous_batch(
+        model,
+        FakeContinuousTokenizer(),
+        [
+            ContinuousBatchRequest("short-0", "short", max_new_tokens=4, arrival_step=0),
+            ContinuousBatchRequest("late-1", "late", max_new_tokens=4, arrival_step=1),
+        ],
+        temperature=0.0,
+    )
+
+    assert [result.request_id for result in run.results] == ["short-0", "late-1"]
+    assert [result.result.generated_token_ids for result in run.results] == [[2, 9], [5, 6, 9]]
+    assert [result.result.text for result in run.results] == ["A", "CD"]
+    assert run.active_batch_sizes == [1, 2, 1, 1]
+    assert run.scheduler_steps[1].admitted_request_ids == ["late-1"]
+    assert run.scheduler_steps[1].completed_request_ids == ["short-0"]
+    assert [tuple(input_ids.shape) for input_ids in model.call_inputs] == [
+        (1, 2),
+        (2, 3),
+        (1, 3),
+        (1, 4),
+    ]
+    assert model.call_use_cache == [False, False, False, False]
+
+
+def test_generate_continuous_batch_respects_max_batch_size():
+    run = generate_continuous_batch(
+        FakeContinuousModel(),
+        FakeContinuousTokenizer(),
+        [
+            ContinuousBatchRequest("short-0", "short", max_new_tokens=2, arrival_step=0),
+            ContinuousBatchRequest("late-1", "late", max_new_tokens=3, arrival_step=0),
+        ],
+        max_batch_size=1,
+        temperature=0.0,
+    )
+
+    assert run.scheduler_steps[0].admitted_request_ids == ["short-0"]
+    assert run.scheduler_steps[2].admitted_request_ids == ["late-1"]
+    assert [result.admitted_step for result in run.results] == [0, 2]
+
+
+def test_generate_continuous_batch_rejects_empty_requests():
+    with pytest.raises(ValueError, match="requests"):
+        generate_continuous_batch(
+            FakeContinuousModel(),
+            FakeContinuousTokenizer(),
+            [],
         )

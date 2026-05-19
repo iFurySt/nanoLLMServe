@@ -7,7 +7,8 @@ import json
 from statistics import mean
 from time import perf_counter
 
-from nanollmserve.engine.engine import generate_batch, generate_one
+from nanollmserve.engine.engine import generate_batch, generate_continuous_batch, generate_one
+from nanollmserve.engine.scheduler import ContinuousBatchRequest
 from nanollmserve.model.hf_runner import load_model_and_tokenizer
 from nanollmserve.sampling.sampler import sample_next_token
 
@@ -109,6 +110,26 @@ def main() -> int:
         ]
         payload["static_batch"] = _summarize_batch(batch_results)
 
+        continuous_requests = [
+            ContinuousBatchRequest(
+                request_id=f"req-{idx}",
+                prompt=args.prompt,
+                max_new_tokens=max(args.max_new_tokens - idx, 1),
+                arrival_step=idx,
+            )
+            for idx in range(args.batch_size)
+        ]
+        continuous_results = [
+            generate_continuous_batch(
+                loaded.model,
+                loaded.tokenizer,
+                continuous_requests,
+                temperature=args.temperature,
+            )
+            for _ in range(args.runs)
+        ]
+        payload["continuous_batch"] = _summarize_continuous_batch(continuous_results)
+
     if not args.skip_naive_baseline:
         naive_results = [
             _generate_one_naive(
@@ -177,6 +198,25 @@ def _summarize_batch(batch_runs) -> dict:
         "mean_tpot_seconds": mean(all_tpot) if all_tpot else 0.0,
         "mean_prefill_seconds": mean(all_prefill),
         "mean_decode_seconds": mean(all_decode),
+    }
+
+
+def _summarize_continuous_batch(batch_runs) -> dict:
+    if not batch_runs:
+        return {}
+
+    all_results = [result for run in batch_runs for result in run.results]
+    all_steps = [step for run in batch_runs for step in run.scheduler_steps]
+    active_batch_sizes = [step.active_batch_size for step in all_steps]
+    return {
+        "request_count": len(batch_runs[0].results),
+        "mean_generated_tokens": mean(result.result.generated_tokens for result in all_results),
+        "mean_elapsed_seconds": mean(result.result.elapsed_seconds for result in all_results),
+        "mean_tokens_per_second": mean(result.result.tokens_per_second for result in all_results),
+        "active_batch_sizes": active_batch_sizes,
+        "max_active_batch_size": max(active_batch_sizes),
+        "mean_active_batch_size": mean(active_batch_sizes),
+        "scheduler_steps": len(batch_runs[0].scheduler_steps),
     }
 
 

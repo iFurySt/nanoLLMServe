@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | B | v0.2 exposes one causal LM through CLI plus OpenAI-compatible HTTP endpoints with KV-cache prefill/decode; v0.3 static batching adds fixed-batch throughput path via benchmark path. | Add Responses text-only continuation/cancel/stateful SSE work and continue toward tool/capability parity. |
-| Architecture docs | B | Package boundaries and runtime flow are documented with `generate_one` and new `generate_batch` static-batch semantics. | Revisit when batch scheduling boundaries shift toward continuous batching in v0.4. |
-| Testing | B | Unit tests cover static-batch generation behavior, response lifecycle, response cancellation, continuation, and response SSE sequencing; some model/tokenizer tests remain dependency-skipped without local torch/transformer runtime. | Add tests for background execution and tool-call structured output as those runtimes are added. |
+| Product surface | B | v0.4 adds scheduler-level continuous batching with waiting/running/finished state, active batch metrics, and benchmark output; HTTP endpoints still use the single-request path. | Add paged/block KV cache so dynamic batches can keep per-row KV state instead of rebuilding full-token rows. |
+| Architecture docs | B | Package boundaries and runtime flow now document `generate_one`, static `generate_batch`, and scheduler-level `generate_continuous_batch`. | Revisit when v0.5 block KV cache changes cache ownership and scheduler/cache contracts. |
+| Testing | B | Unit tests cover static-batch generation behavior, continuous batching admission/removal and active batch sizes, response lifecycle, response cancellation, continuation, and response SSE sequencing. | Add GPU benchmark validation for real model continuous batching and later paged-KV behavior. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |
