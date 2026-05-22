@@ -44,6 +44,10 @@ The runtime now includes:
   pool, request-to-block tables, allocation/release, and fragmentation metrics.
   The manager is allocator metadata and is wired into generation lifecycle; it
   does not replace Hugging Face `past_key_values` with GPU block tensors yet.
+- `v0.6` prefix cache: stores block-aligned prompt-prefix hashes and sliced
+  Hugging Face `past_key_values`, performs longest strict-prefix lookup on the
+  single-request path, tracks hit/miss/ref-count/LRU state, and pre-fills only
+  the uncached suffix after a prefix hit.
 
 The CLI and HTTP server both use the single-request path. `generate_batch` and
 `generate_continuous_batch` are used by benchmarked batching scenarios while
@@ -183,17 +187,26 @@ Block KV cache manager path
   -> completion releases request block tables back to the free pool
   -> benchmarks/benchmark_block_manager.py reports reserved tokens,
      internal fragmentation, utilization, and a contiguous-slot comparison
+
+Prefix cache path
+  -> PrefixCache(max_entries, block_size)
+  -> first prompt prefill stores block-aligned token-prefix hashes and sliced KV
+  -> later prompt lookup finds the longest cached strict prefix
+  -> model prefill receives only the uncached suffix with cached past_key_values
+  -> completion releases prefix-cache refs while entries stay available for reuse
+  -> benchmarks/benchmark_prefix_cache.py compares no-cache vs prefix-cache TTFT
 ```
 
 ## Known Gaps
 
 - KV cache reuse uses Hugging Face `past_key_values` directly. v0.5 adds block
-  allocation metadata and lifecycle hooks, but it does not implement a
-  PagedAttention kernel, tensor paging, eviction, or prefix reuse yet.
+  allocation metadata and v0.6 adds in-process prefix reuse, but neither
+  implements a PagedAttention kernel, tensor paging, or distributed cache.
 - Static batching exists for a fixed batch size in `engine.generate_batch`.
   Continuous batching exists at scheduler level in `generate_continuous_batch`,
-  but it still rebuilds full-token active batches; v0.5 exposes block ownership
-  metadata before v0.6 prefix cache and later tensor-level paging work.
+  but it still rebuilds full-token active batches. Prefix reuse currently hooks
+  into the single-request path only; batch-aware prefix reuse is deferred until
+  later scheduler/cache work.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
   does not implement auth, tools, background Responses runs, Responses cancel,

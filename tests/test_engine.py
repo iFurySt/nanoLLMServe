@@ -5,6 +5,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 from nanollmserve.cache.block_manager import KVBlockManager
+from nanollmserve.cache.prefix_cache import PrefixCache
 from nanollmserve.engine.engine import (
     generate_batch,
     generate_continuous_batch,
@@ -120,6 +121,55 @@ class FakeModel:
         next_id = {1: 2, 2: 3}.get(self.call_count, 9)
         logits[:, -1, next_id] = 100.0
         return SimpleNamespace(logits=logits, past_key_values=(f"kv-{self.call_count}",))
+
+
+class FakePrefixTokenizer:
+    eos_token_id = 9
+
+    prompt_tokens = {
+        "shared alpha": [1, 2, 3, 4],
+        "shared beta": [1, 2, 5, 6],
+    }
+
+    def __call__(self, prompt, return_tensors):
+        assert return_tensors == "pt"
+        return {
+            "input_ids": torch.tensor([self.prompt_tokens[prompt]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1] * len(self.prompt_tokens[prompt])], dtype=torch.long),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        return "".join("A" for token_id in token_ids if not skip_special_tokens or token_id != self.eos_token_id)
+
+
+class FakePrefixModel:
+    def __init__(self):
+        self.calls = []
+
+    def parameters(self):
+        return iter(())
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, attention_mask, past_key_values=None, use_cache=False):
+        past_tokens = 0
+        if past_key_values is not None:
+            past_tokens = int(past_key_values[0][0].shape[-2])
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": attention_mask.clone(),
+                "past_tokens": past_tokens,
+                "use_cache": use_cache,
+            }
+        )
+        total_tokens = past_tokens + input_ids.shape[-1]
+        key = torch.zeros((1, 1, total_tokens, 2), dtype=torch.float32, device=input_ids.device)
+        value = torch.ones((1, 1, total_tokens, 2), dtype=torch.float32, device=input_ids.device)
+        logits = torch.full((*input_ids.shape, 10), -100.0, device=input_ids.device)
+        logits[:, -1, 9] = 100.0
+        return SimpleNamespace(logits=logits, past_key_values=((key, value),))
 
 
 class FakeBatchModel:
@@ -326,6 +376,37 @@ def test_generate_one_allocates_and_releases_kv_blocks():
     ]
     assert manager.events[0] == ("allocate", "req-a", 1, 2)
     assert manager.events[-1] == ("release", "req-a", 0, 0)
+
+
+def test_generate_one_uses_prefix_cache_for_shared_prompt_prefix():
+    model = FakePrefixModel()
+    cache = PrefixCache(max_entries=8, block_size=2)
+
+    generate_one(
+        model,
+        FakePrefixTokenizer(),
+        "shared alpha",
+        max_new_tokens=1,
+        temperature=0.0,
+        prefix_cache=cache,
+    )
+    generate_one(
+        model,
+        FakePrefixTokenizer(),
+        "shared beta",
+        max_new_tokens=1,
+        temperature=0.0,
+        prefix_cache=cache,
+    )
+
+    assert model.calls[0]["input_ids"].tolist() == [[1, 2, 3, 4]]
+    assert model.calls[0]["past_tokens"] == 0
+    assert model.calls[1]["input_ids"].tolist() == [[5, 6]]
+    assert model.calls[1]["past_tokens"] == 2
+    assert model.calls[1]["attention_mask"].tolist() == [[1, 1, 1, 1]]
+    assert cache.stats().hits == 1
+    assert cache.stats().misses == 1
+    assert cache.stats().referenced_entries == 0
 
 
 def test_stream_generate_one_yields_incremental_tokens():

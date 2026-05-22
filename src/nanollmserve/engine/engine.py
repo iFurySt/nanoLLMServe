@@ -8,6 +8,7 @@ from time import perf_counter
 import torch
 
 from nanollmserve.cache.block_manager import KVBlockManager
+from nanollmserve.cache.prefix_cache import PrefixCache, PrefixCacheLookup
 from nanollmserve.engine.request import GenerationRequestState
 from nanollmserve.engine.scheduler import (
     ContinuousBatchRequest,
@@ -105,6 +106,7 @@ def generate_one(
     temperature: float = 0.0,
     seed: int | None = None,
     kv_block_manager: KVBlockManager | None = None,
+    prefix_cache: PrefixCache | None = None,
     request_id: str = "request-0",
 ) -> GenerationResult:
     """Generate text for one prompt with prefill/decode KV cache reuse."""
@@ -118,6 +120,7 @@ def generate_one(
             temperature=temperature,
             seed=seed,
             kv_block_manager=kv_block_manager,
+            prefix_cache=prefix_cache,
             request_id=request_id,
         )
     )
@@ -441,6 +444,7 @@ def stream_generate_one(
     temperature: float = 0.0,
     seed: int | None = None,
     kv_block_manager: KVBlockManager | None = None,
+    prefix_cache: PrefixCache | None = None,
     request_id: str = "request-0",
 ):
     """Yield generated text one token at a time for one prompt.
@@ -472,6 +476,7 @@ def stream_generate_one(
         attention_mask=attention_mask,
     )
     _allocate_prompt_blocks(kv_block_manager, request_id, state.prompt_tokens)
+    prefix_lookup: PrefixCacheLookup | None = None
 
     try:
         generator = None
@@ -484,12 +489,26 @@ def stream_generate_one(
 
         model.eval()
         with torch.inference_mode():
+            prefix_lookup = _lookup_prefix_cache(prefix_cache, prompt_token_ids)
+            prefix_tokens = prefix_lookup.matched_tokens if prefix_lookup is not None else 0
+            prefill_input_ids = input_ids[:, prefix_tokens:]
+            if prefill_input_ids.shape[-1] == 0:
+                prefix_tokens = 0
+                prefill_input_ids = input_ids
+                prefix_lookup = None
+
             prefill_start = perf_counter()
-            outputs = model(input_ids=input_ids, attention_mask=state.attention_mask, use_cache=True)
+            outputs = model(
+                input_ids=prefill_input_ids,
+                attention_mask=state.attention_mask,
+                past_key_values=prefix_lookup.past_key_values if prefix_lookup is not None else None,
+                use_cache=True,
+            )
             state.prefill_seconds = perf_counter() - prefill_start
             state.past_key_values = getattr(outputs, "past_key_values", None)
             if state.past_key_values is None:
                 raise RuntimeError("model did not return past_key_values; KV cache decode requires use_cache support")
+            _store_prompt_prefix_cache(prefix_cache, prompt_token_ids, state.past_key_values)
 
             next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
             step = _record_step(
@@ -537,6 +556,7 @@ def stream_generate_one(
                 if state.generated_tokens >= max_new_tokens:
                     break
     finally:
+        _release_prefix_cache(prefix_cache, prefix_lookup)
         _release_blocks(kv_block_manager, [request_id])
 
 
@@ -750,3 +770,29 @@ def _release_blocks(kv_block_manager: KVBlockManager | None, request_ids: list[s
         return
     for request_id in reversed(request_ids):
         kv_block_manager.release(request_id)
+
+
+def _lookup_prefix_cache(
+    prefix_cache: PrefixCache | None,
+    prompt_token_ids: list[int],
+) -> PrefixCacheLookup | None:
+    if prefix_cache is None:
+        return None
+    return prefix_cache.lookup(prompt_token_ids)
+
+
+def _store_prompt_prefix_cache(
+    prefix_cache: PrefixCache | None,
+    prompt_token_ids: list[int],
+    past_key_values,
+) -> None:
+    if prefix_cache is not None:
+        prefix_cache.store_prompt(prompt_token_ids, past_key_values)
+
+
+def _release_prefix_cache(
+    prefix_cache: PrefixCache | None,
+    lookup: PrefixCacheLookup | None,
+) -> None:
+    if prefix_cache is not None and lookup is not None:
+        prefix_cache.release(lookup)

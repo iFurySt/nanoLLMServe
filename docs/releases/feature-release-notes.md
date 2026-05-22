@@ -4,6 +4,7 @@
 
 | Date | Area | User Impact | Change Summary |
 | --- | --- | --- | --- |
+| 2026-05-22 | v0.6 Prefix cache | Users can reuse shared prompt-prefix KV state on the single-request path and benchmark repeated-prefix TTFT behavior. | Added `PrefixCache`, prefix token hashing, longest-prefix lookup, ref counts, LRU eviction, `generate_one` prefix-cache hooks, hit/miss stats, and `benchmark_prefix_cache.py`. |
 | 2026-05-22 | v0.5 Block KV cache manager | Users can inspect KV block allocation, release, utilization, and fragmentation behavior through tests and a benchmark. | Added `KVBlockManager`, request block tables, free block pool, generation lifecycle hooks, usage metrics, and `benchmark_block_manager.py`. |
 | 2026-05-19 | v0.4 Continuous batching | Users can benchmark scheduler-level continuous batching where requests arrive and finish across scheduler steps. | Added `ContinuousBatchScheduler`, `generate_continuous_batch`, per-step active batch metrics, benchmark `continuous_batch` output, and tests for admission/removal behavior. |
 | 2026-05-18 | v0.3 Responses API | Users can cancel running responses, continue from prior turns, and parse deterministic response SSE ordering. | Added `/v1/responses/{response_id}/cancel`, `previous_response_id` continuation for text-only prompts, in-memory response state transitions, and ordered SSE `sequence_number` events. |

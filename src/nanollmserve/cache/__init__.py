@@ -7,11 +7,25 @@ from nanollmserve.cache.block_manager import (
     KVBlockUsage,
     RequestBlockTable,
 )
+from nanollmserve.cache.prefix_cache import (
+    PrefixCache,
+    PrefixCacheEntry,
+    PrefixCacheKey,
+    PrefixCacheLookup,
+    PrefixCacheStats,
+    make_prefix_key,
+)
 
 __all__ = [
     "BlockAllocationError",
     "KVBlock",
     "KVBlockManager",
     "KVBlockUsage",
+    "PrefixCache",
+    "PrefixCacheEntry",
+    "PrefixCacheKey",
+    "PrefixCacheLookup",
+    "PrefixCacheStats",
     "RequestBlockTable",
+    "make_prefix_key",
 ]

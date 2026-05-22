@@ -136,6 +136,27 @@ The output compares block allocation against a contiguous fixed-slot baseline
 and reports `internal_fragmentation_tokens`, `block_utilization`, and
 `fragmentation_tokens_saved_vs_contiguous`.
 
+## v0.6 Prefix Cache
+
+v0.6 adds a teaching-scale prefix cache for the single-request generation path.
+It hashes block-aligned prompt prefixes, stores sliced Hugging Face
+`past_key_values`, tracks hit/miss/ref-count/LRU state, and lets later requests
+with the same prefix prefill only the uncached suffix.
+
+Run the repeated-prefix benchmark:
+
+```bash
+python benchmarks/benchmark_prefix_cache.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --runs 3 \
+  --warmup 1
+```
+
+The output compares `no_prefix_cache` with `prefix_cache` and reports
+`cache_hits`, `cache_misses`, `mean_ttft_seconds`, `mean_prefill_seconds`, and
+TTFT/prefill speedup ratios.
+
 ## v0.1 OpenAI-Compatible Server
 
 Serve one local or Hugging Face causal LM:

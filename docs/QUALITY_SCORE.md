@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | B | v0.5 adds block KV allocation metadata, generation lifecycle hooks, and fragmentation benchmark output; HTTP endpoints still use the single-request path. | Add prefix cache and later tensor-level paged KV execution so block tables affect real KV tensor reuse. |
-| Architecture docs | B | Package boundaries and runtime flow now document `generate_one`, static `generate_batch`, scheduler-level `generate_continuous_batch`, and `KVBlockManager`. | Revisit when v0.6 prefix cache introduces cross-request cache lookup and eviction. |
-| Testing | B | Unit tests cover block allocation/release/fragmentation metrics, generation block lifecycle hooks, static batching, continuous batching admission/removal, and response lifecycle behavior. | Add GPU benchmark validation for real model block metadata and later tensor-level paged-KV behavior. |
+| Product surface | B | v0.6 adds single-request prefix-cache reuse, visible cache stats, and repeated-prefix benchmark output; batch prefix reuse and tensor-level paged KV remain future work. | Add chunked prefill and later connect prefix reuse to batch scheduling and tensor block ownership. |
+| Architecture docs | B | Package boundaries and runtime flow now document `generate_one`, static `generate_batch`, scheduler-level `generate_continuous_batch`, `KVBlockManager`, and `PrefixCache`. | Revisit when v0.7 chunked prefill changes long-prompt admission and prefill scheduling. |
+| Testing | B | Unit tests cover prefix hashing, longest-prefix lookup, ref counts, LRU eviction, single-request prefix prefill skipping, block allocation/release, batching, and response lifecycle behavior. | Add GPU benchmark validation for real model prefix-cache TTFT and later tensor-level paged-KV behavior. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |
