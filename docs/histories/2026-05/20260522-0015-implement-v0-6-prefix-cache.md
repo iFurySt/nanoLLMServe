@@ -26,6 +26,9 @@
     eviction, benchmark helpers, and engine-level suffix-only prefill.
   - Bumped package/runtime version metadata to `0.6.0`.
   - Updated architecture, roadmap, release notes, README, and quality notes.
+  - Fixed real Qwen3/Transformers `DynamicCache` reuse by preserving cache
+    object type and handing each request a local cache copy before model
+    forward mutates it.
 
 ### Design Intent
 
@@ -35,6 +38,11 @@ block-aligned prompt prefixes and sliced Hugging Face `past_key_values`, then
 reuses the longest strict prefix for later single-request generation. Exact
 full-prompt reuse and batch-aware prefix reuse are left for later milestones
 because they require additional logits/state contracts and scheduler work.
+
+Transformers cache objects are mutable during forward passes, so cached
+`past_key_values` must retain the model-specific cache type and be copied before
+reuse. Converting Qwen3 `DynamicCache` to a legacy tuple breaks model forward
+because Qwen3 expects methods such as `get_seq_length()`.
 
 ### Files Modified
 

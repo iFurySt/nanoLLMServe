@@ -8,6 +8,7 @@ tensor-level paged KV execution.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from collections import OrderedDict
 from dataclasses import dataclass
 from hashlib import sha256
@@ -34,6 +35,7 @@ class PrefixCacheEntry:
 @dataclass(frozen=True)
 class PrefixCacheLookup:
     entry: PrefixCacheEntry | None
+    cached_past_key_values: Any | None = None
 
     @property
     def matched_tokens(self) -> int:
@@ -49,9 +51,7 @@ class PrefixCacheLookup:
 
     @property
     def past_key_values(self) -> Any | None:
-        if self.entry is None:
-            return None
-        return self.entry.past_key_values
+        return self.cached_past_key_values
 
 
 @dataclass(frozen=True)
@@ -97,7 +97,7 @@ class PrefixCache:
             entry.hits += 1
             self._hits += 1
             self._entries.move_to_end(key)
-            return PrefixCacheLookup(entry=entry)
+            return PrefixCacheLookup(entry=entry, cached_past_key_values=clone_past_key_values(entry.past_key_values))
 
         self._misses += 1
         return PrefixCacheLookup(entry=None)
@@ -184,14 +184,32 @@ def slice_past_key_values(past_key_values: Any, token_count: int) -> Any:
 
     if past_key_values is None:
         return None
-    if hasattr(past_key_values, "to_legacy_cache"):
-        return slice_past_key_values(past_key_values.to_legacy_cache(), token_count)
+    if hasattr(past_key_values, "crop"):
+        cloned = deepcopy(past_key_values)
+        cloned.crop(token_count)
+        return cloned
     if isinstance(past_key_values, tuple):
         return tuple(slice_past_key_values(item, token_count) for item in past_key_values)
     if isinstance(past_key_values, list):
         return [slice_past_key_values(item, token_count) for item in past_key_values]
     if hasattr(past_key_values, "shape") and hasattr(past_key_values, "__getitem__"):
-        return past_key_values[..., :token_count, :].detach()
+        return past_key_values[..., :token_count, :].detach().clone()
+    return deepcopy(past_key_values)
+
+
+def clone_past_key_values(past_key_values: Any) -> Any:
+    """Return a request-local KV object so model forwards cannot mutate cache entries."""
+
+    if past_key_values is None:
+        return None
+    if hasattr(past_key_values, "crop"):
+        return deepcopy(past_key_values)
+    if isinstance(past_key_values, tuple):
+        return tuple(clone_past_key_values(item) for item in past_key_values)
+    if isinstance(past_key_values, list):
+        return [clone_past_key_values(item) for item in past_key_values]
+    if hasattr(past_key_values, "shape") and hasattr(past_key_values, "detach"):
+        return past_key_values.detach().clone()
     return past_key_values
 
 
