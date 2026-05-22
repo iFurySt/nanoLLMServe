@@ -7,6 +7,7 @@ from time import perf_counter
 
 import torch
 
+from nanollmserve.cache.block_manager import KVBlockManager
 from nanollmserve.engine.request import GenerationRequestState
 from nanollmserve.engine.scheduler import (
     ContinuousBatchRequest,
@@ -103,6 +104,8 @@ def generate_one(
     max_new_tokens: int = 32,
     temperature: float = 0.0,
     seed: int | None = None,
+    kv_block_manager: KVBlockManager | None = None,
+    request_id: str = "request-0",
 ) -> GenerationResult:
     """Generate text for one prompt with prefill/decode KV cache reuse."""
 
@@ -114,6 +117,8 @@ def generate_one(
             max_new_tokens=max_new_tokens,
             temperature=temperature,
             seed=seed,
+            kv_block_manager=kv_block_manager,
+            request_id=request_id,
         )
     )
     if not steps:
@@ -143,6 +148,8 @@ def generate_batch(
     max_new_tokens: int = 32,
     temperature: float = 0.0,
     seed: int | None = None,
+    kv_block_manager: KVBlockManager | None = None,
+    request_ids: list[str] | None = None,
 ) -> list[GenerationResult]:
     """Generate text for a fixed batch in one KV-cache prefill and decode loop.
 
@@ -156,6 +163,8 @@ def generate_batch(
         raise ValueError("prompts must contain at least one entry")
     if any(prompt == "" for prompt in prompts):
         raise ValueError("all prompts must be non-empty")
+    if request_ids is not None and len(request_ids) != len(prompts):
+        raise ValueError("request_ids must match prompts length")
 
     device = _model_device(model)
     encoded = tokenizer(
@@ -175,88 +184,50 @@ def generate_batch(
     eos_token_id = next(iter(eos_token_ids), 0)
 
     states: list[GenerationRequestState] = []
+    block_request_ids = request_ids or [f"batch-{idx}" for idx in range(len(prompts))]
     for idx, prompt in enumerate(prompts):
         length = int(prompt_lengths[idx].item())
-        states.append(
-            GenerationRequestState(
-                prompt=prompt,
-                prompt_token_ids=[
-                    int(token_id) for token_id in input_ids[idx, :length].tolist()
-                ],
-                attention_mask=attention_mask[idx, :length].clone(),
-            )
+        state = GenerationRequestState(
+            prompt=prompt,
+            prompt_token_ids=[
+                int(token_id) for token_id in input_ids[idx, :length].tolist()
+            ],
+            attention_mask=attention_mask[idx, :length].clone(),
         )
+        states.append(state)
 
-    if seed is not None:
-        generator = torch.Generator(device=device)
-        generator.manual_seed(seed)
-    else:
-        generator = None
+    allocated_request_ids: list[str] = []
+    try:
+        for request_id, state in zip(block_request_ids, states):
+            _allocate_prompt_blocks(kv_block_manager, request_id, state.prompt_tokens)
+            allocated_request_ids.append(request_id)
 
-    start = perf_counter()
-    model.eval()
-    with torch.inference_mode():
-        prefill_start = perf_counter()
-        outputs = model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            use_cache=True,
-        )
-        prefill_seconds = perf_counter() - prefill_start
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
+        else:
+            generator = None
 
-        past_key_values = getattr(outputs, "past_key_values", None)
-        if past_key_values is None:
-            raise RuntimeError("model did not return past_key_values; KV cache decode requires use_cache support")
-
-        next_logits = _select_last_token_logits(outputs.logits, attention_mask)
-        next_tokens = _sample_from_logits(
-            next_logits,
-            temperature=temperature,
-            generator=generator,
-        )
-        input_ids, attention_mask = _append_batch_step(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            next_token_ids=next_tokens,
-            states=states,
-            eos_token_ids=eos_token_ids,
-            max_new_tokens=max_new_tokens,
-            start=start,
-            is_first=True,
-        )
-
-        for state in states:
-            state.prefill_seconds = prefill_seconds
-
-        for _ in range(max_new_tokens - 1):
-            if all(state.finished or state.generated_tokens >= max_new_tokens for state in states):
-                break
-
-            decode_start = perf_counter()
+        start = perf_counter()
+        model.eval()
+        with torch.inference_mode():
+            prefill_start = perf_counter()
             outputs = model(
-                input_ids=next_tokens,
+                input_ids=input_ids,
                 attention_mask=attention_mask,
-                past_key_values=past_key_values,
                 use_cache=True,
             )
+            prefill_seconds = perf_counter() - prefill_start
+
             past_key_values = getattr(outputs, "past_key_values", None)
             if past_key_values is None:
-                raise RuntimeError("model did not return past_key_values during decode")
+                raise RuntimeError("model did not return past_key_values; KV cache decode requires use_cache support")
 
-            sampled_tokens = _sample_from_logits(
-                outputs.logits[:, -1, :],
+            next_logits = _select_last_token_logits(outputs.logits, attention_mask)
+            next_tokens = _sample_from_logits(
+                next_logits,
                 temperature=temperature,
                 generator=generator,
-            )
-            decode_elapsed = perf_counter() - decode_start
-            for state in states:
-                if not state.finished and state.generated_tokens < max_new_tokens:
-                    state.decode_seconds += decode_elapsed
-            next_tokens = _force_finished_rows(
-                sampled_tokens,
-                states,
-                eos_token_id,
-                max_new_tokens,
             )
             input_ids, attention_mask = _append_batch_step(
                 input_ids=input_ids,
@@ -265,12 +236,62 @@ def generate_batch(
                 states=states,
                 eos_token_ids=eos_token_ids,
                 max_new_tokens=max_new_tokens,
-                start=None,
-                is_first=False,
+                start=start,
+                is_first=True,
+                kv_block_manager=kv_block_manager,
+                request_ids=block_request_ids,
             )
 
-    elapsed = perf_counter() - start
-    return [_finalize_batch_state(state, tokenizer, elapsed=elapsed) for state in states]
+            for state in states:
+                state.prefill_seconds = prefill_seconds
+
+            for _ in range(max_new_tokens - 1):
+                if all(state.finished or state.generated_tokens >= max_new_tokens for state in states):
+                    break
+
+                decode_start = perf_counter()
+                outputs = model(
+                    input_ids=next_tokens,
+                    attention_mask=attention_mask,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                )
+                past_key_values = getattr(outputs, "past_key_values", None)
+                if past_key_values is None:
+                    raise RuntimeError("model did not return past_key_values during decode")
+
+                sampled_tokens = _sample_from_logits(
+                    outputs.logits[:, -1, :],
+                    temperature=temperature,
+                    generator=generator,
+                )
+                decode_elapsed = perf_counter() - decode_start
+                for state in states:
+                    if not state.finished and state.generated_tokens < max_new_tokens:
+                        state.decode_seconds += decode_elapsed
+                next_tokens = _force_finished_rows(
+                    sampled_tokens,
+                    states,
+                    eos_token_id,
+                    max_new_tokens,
+                )
+                input_ids, attention_mask = _append_batch_step(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    next_token_ids=next_tokens,
+                    states=states,
+                    eos_token_ids=eos_token_ids,
+                    max_new_tokens=max_new_tokens,
+                    start=None,
+                    is_first=False,
+                    kv_block_manager=kv_block_manager,
+                    request_ids=block_request_ids,
+                )
+
+        elapsed = perf_counter() - start
+        return [_finalize_batch_state(state, tokenizer, elapsed=elapsed) for state in states]
+    finally:
+        _release_blocks(kv_block_manager, allocated_request_ids)
 
 
 def generate_continuous_batch(
@@ -281,6 +302,7 @@ def generate_continuous_batch(
     max_batch_size: int | None = None,
     temperature: float = 0.0,
     seed: int | None = None,
+    kv_block_manager: KVBlockManager | None = None,
 ) -> ContinuousBatchRunResult:
     """Generate requests with teaching-scale continuous batching.
 
@@ -297,6 +319,7 @@ def generate_continuous_batch(
     states: dict[str, GenerationRequestState] = {}
     admitted_at: dict[str, float] = {}
     finished_at: dict[str, float] = {}
+    allocated_request_ids: list[str] = []
     scheduler_steps: list[SchedulerStepStats] = []
     eos_token_ids = _eos_token_ids(tokenizer)
 
@@ -309,72 +332,86 @@ def generate_continuous_batch(
     start = perf_counter()
     model.eval()
     step = 0
-    with torch.inference_mode():
-        while scheduler.has_work():
-            if not scheduler.running and scheduler.next_arrival_step() is not None:
-                step = max(step, scheduler.next_arrival_step())
+    try:
+        with torch.inference_mode():
+            while scheduler.has_work():
+                if not scheduler.running and scheduler.next_arrival_step() is not None:
+                    step = max(step, scheduler.next_arrival_step())
 
-            admitted = scheduler.admit(step)
-            for scheduled in admitted:
-                states[scheduled.request.request_id] = _state_from_prompt(
-                    tokenizer,
-                    scheduled.request.prompt,
-                    device,
+                admitted = scheduler.admit(step)
+                for scheduled in admitted:
+                    states[scheduled.request.request_id] = _state_from_prompt(
+                        tokenizer,
+                        scheduled.request.prompt,
+                        device,
+                    )
+                    _allocate_prompt_blocks(
+                        kv_block_manager,
+                        scheduled.request.request_id,
+                        states[scheduled.request.request_id].prompt_tokens,
+                    )
+                    allocated_request_ids.append(scheduled.request.request_id)
+                    admitted_at[scheduled.request.request_id] = perf_counter()
+
+                running_ids = [state.request.request_id for state in scheduler.running]
+                if not running_ids:
+                    continue
+
+                batch = _continuous_batch_tensors(states, running_ids, tokenizer, device)
+                batch_start = perf_counter()
+                outputs = model(
+                    input_ids=batch["input_ids"],
+                    attention_mask=batch["attention_mask"],
+                    use_cache=False,
                 )
-                admitted_at[scheduled.request.request_id] = perf_counter()
-
-            running_ids = [state.request.request_id for state in scheduler.running]
-            if not running_ids:
-                continue
-
-            batch = _continuous_batch_tensors(states, running_ids, tokenizer, device)
-            batch_start = perf_counter()
-            outputs = model(
-                input_ids=batch["input_ids"],
-                attention_mask=batch["attention_mask"],
-                use_cache=False,
-            )
-            batch_elapsed = perf_counter() - batch_start
-            next_logits = _select_last_token_logits(outputs.logits, batch["attention_mask"])
-            next_tokens = _sample_from_logits(
-                next_logits,
-                temperature=temperature,
-                generator=generator,
-            )
-
-            completed_ids: set[str] = set()
-            for index, request_id in enumerate(running_ids):
-                state = states[request_id]
-                request = request_by_id[request_id]
-                token_id = int(next_tokens[index, 0].item())
-                state.generated_token_ids.append(token_id)
-                state.attention_mask = torch.cat(
-                    [
-                        state.attention_mask,
-                        torch.ones(1, dtype=state.attention_mask.dtype, device=state.attention_mask.device),
-                    ],
-                    dim=-1,
+                batch_elapsed = perf_counter() - batch_start
+                next_logits = _select_last_token_logits(outputs.logits, batch["attention_mask"])
+                next_tokens = _sample_from_logits(
+                    next_logits,
+                    temperature=temperature,
+                    generator=generator,
                 )
-                if state.generated_tokens == 1:
-                    state.ttft_seconds = perf_counter() - admitted_at[request_id]
-                    state.prefill_seconds += batch_elapsed
-                else:
-                    state.decode_seconds += batch_elapsed
-                if token_id in eos_token_ids or state.generated_tokens >= request.max_new_tokens:
-                    state.finished = token_id in eos_token_ids
-                    completed_ids.add(request_id)
-                    finished_at[request_id] = perf_counter()
 
-            completed = scheduler.finish(completed_ids, step)
-            scheduler_steps.append(
-                scheduler.record_step(
-                    step=step,
-                    admitted=admitted,
-                    running_request_ids=running_ids,
-                    completed=completed,
+                completed_ids: set[str] = set()
+                for index, request_id in enumerate(running_ids):
+                    state = states[request_id]
+                    request = request_by_id[request_id]
+                    token_id = int(next_tokens[index, 0].item())
+                    state.generated_token_ids.append(token_id)
+                    _append_generated_block_token(kv_block_manager, request_id)
+                    state.attention_mask = torch.cat(
+                        [
+                            state.attention_mask,
+                            torch.ones(1, dtype=state.attention_mask.dtype, device=state.attention_mask.device),
+                        ],
+                        dim=-1,
+                    )
+                    if state.generated_tokens == 1:
+                        state.ttft_seconds = perf_counter() - admitted_at[request_id]
+                        state.prefill_seconds += batch_elapsed
+                    else:
+                        state.decode_seconds += batch_elapsed
+                    if token_id in eos_token_ids or state.generated_tokens >= request.max_new_tokens:
+                        state.finished = token_id in eos_token_ids
+                        completed_ids.add(request_id)
+                        finished_at[request_id] = perf_counter()
+
+                completed = scheduler.finish(completed_ids, step)
+                for completed_state in completed:
+                    if kv_block_manager is not None:
+                        kv_block_manager.release(completed_state.request.request_id)
+                        allocated_request_ids.remove(completed_state.request.request_id)
+                scheduler_steps.append(
+                    scheduler.record_step(
+                        step=step,
+                        admitted=admitted,
+                        running_request_ids=running_ids,
+                        completed=completed,
+                    )
                 )
-            )
-            step += 1
+                step += 1
+    finally:
+        _release_blocks(kv_block_manager, allocated_request_ids)
 
     results: list[ContinuousBatchGenerationResult] = []
     finished_by_id = {state.request.request_id: state for state in scheduler.finished}
@@ -403,6 +440,8 @@ def stream_generate_one(
     max_new_tokens: int = 32,
     temperature: float = 0.0,
     seed: int | None = None,
+    kv_block_manager: KVBlockManager | None = None,
+    request_id: str = "request-0",
 ):
     """Yield generated text one token at a time for one prompt.
 
@@ -432,63 +471,73 @@ def stream_generate_one(
         prompt_token_ids=prompt_token_ids,
         attention_mask=attention_mask,
     )
+    _allocate_prompt_blocks(kv_block_manager, request_id, state.prompt_tokens)
 
-    generator = None
-    if seed is not None:
-        generator = torch.Generator(device=device)
-        generator.manual_seed(seed)
+    try:
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(seed)
 
-    eos_token_ids = _eos_token_ids(tokenizer)
-    start = perf_counter()
+        eos_token_ids = _eos_token_ids(tokenizer)
+        start = perf_counter()
 
-    model.eval()
-    with torch.inference_mode():
-        prefill_start = perf_counter()
-        outputs = model(input_ids=input_ids, attention_mask=state.attention_mask, use_cache=True)
-        state.prefill_seconds = perf_counter() - prefill_start
-        state.past_key_values = getattr(outputs, "past_key_values", None)
-        if state.past_key_values is None:
-            raise RuntimeError("model did not return past_key_values; KV cache decode requires use_cache support")
-
-        next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
-        yield _record_step(
-            tokenizer,
-            state,
-            next_token,
-            eos_token_ids=eos_token_ids,
-            start=start,
-            max_new_tokens=max_new_tokens,
-        )
-        if state.finished:
-            return
-
-        for _ in range(max_new_tokens - 1):
-            decode_start = perf_counter()
-            outputs = model(
-                input_ids=next_token.to(input_ids.device),
-                attention_mask=state.attention_mask,
-                past_key_values=state.past_key_values,
-                use_cache=True,
-            )
+        model.eval()
+        with torch.inference_mode():
+            prefill_start = perf_counter()
+            outputs = model(input_ids=input_ids, attention_mask=state.attention_mask, use_cache=True)
+            state.prefill_seconds = perf_counter() - prefill_start
             state.past_key_values = getattr(outputs, "past_key_values", None)
             if state.past_key_values is None:
-                raise RuntimeError("model did not return past_key_values during decode")
+                raise RuntimeError("model did not return past_key_values; KV cache decode requires use_cache support")
 
             next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
-            state.decode_seconds += perf_counter() - decode_start
-            yield _record_step(
+            step = _record_step(
                 tokenizer,
                 state,
                 next_token,
                 eos_token_ids=eos_token_ids,
                 start=start,
                 max_new_tokens=max_new_tokens,
+                kv_block_manager=kv_block_manager,
+                request_id=request_id,
             )
+            yield step
             if state.finished:
                 return
 
-            if state.generated_tokens >= max_new_tokens:
-                break
+            for _ in range(max_new_tokens - 1):
+                decode_start = perf_counter()
+                outputs = model(
+                    input_ids=next_token.to(input_ids.device),
+                    attention_mask=state.attention_mask,
+                    past_key_values=state.past_key_values,
+                    use_cache=True,
+                )
+                state.past_key_values = getattr(outputs, "past_key_values", None)
+                if state.past_key_values is None:
+                    raise RuntimeError("model did not return past_key_values during decode")
+
+                next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
+                state.decode_seconds += perf_counter() - decode_start
+                step = _record_step(
+                    tokenizer,
+                    state,
+                    next_token,
+                    eos_token_ids=eos_token_ids,
+                    start=start,
+                    max_new_tokens=max_new_tokens,
+                    kv_block_manager=kv_block_manager,
+                    request_id=request_id,
+                )
+                yield step
+                if state.finished:
+                    return
+
+                if state.generated_tokens >= max_new_tokens:
+                    break
+    finally:
+        _release_blocks(kv_block_manager, [request_id])
 
 
 def _finalize_batch_state(
@@ -599,12 +648,16 @@ def _append_batch_step(
     max_new_tokens: int,
     start: float | None,
     is_first: bool,
+    kv_block_manager: KVBlockManager | None = None,
+    request_ids: list[str] | None = None,
 ):
     for index, state in enumerate(states):
         token_id = int(next_token_ids[index, 0].item())
         if state.finished or state.generated_tokens >= max_new_tokens:
             continue
         state.generated_token_ids.append(token_id)
+        if request_ids is not None:
+            _append_generated_block_token(kv_block_manager, request_ids[index])
         state.attention_mask = torch.cat(
             [
                 state.attention_mask,
@@ -640,11 +693,15 @@ def _record_step(
     eos_token_ids: set[int],
     start: float,
     max_new_tokens: int,
+    kv_block_manager: KVBlockManager | None = None,
+    request_id: str | None = None,
 ) -> GenerationStep:
     import torch
 
     next_id = int(next_token[0, 0].item())
     state.generated_token_ids.append(next_id)
+    if request_id is not None:
+        _append_generated_block_token(kv_block_manager, request_id)
     state.attention_mask = torch.cat(
         [state.attention_mask, torch.ones_like(next_token).to(state.attention_mask.device)],
         dim=-1,
@@ -669,3 +726,27 @@ def _record_step(
         decode_seconds=state.decode_seconds,
         finished=state.finished,
     )
+
+
+def _allocate_prompt_blocks(
+    kv_block_manager: KVBlockManager | None,
+    request_id: str,
+    prompt_tokens: int,
+) -> None:
+    if kv_block_manager is not None:
+        kv_block_manager.allocate(request_id, prompt_tokens)
+
+
+def _append_generated_block_token(
+    kv_block_manager: KVBlockManager | None,
+    request_id: str,
+) -> None:
+    if kv_block_manager is not None:
+        kv_block_manager.append_tokens(request_id, 1)
+
+
+def _release_blocks(kv_block_manager: KVBlockManager | None, request_ids: list[str]) -> None:
+    if kv_block_manager is None:
+        return
+    for request_id in reversed(request_ids):
+        kv_block_manager.release(request_id)

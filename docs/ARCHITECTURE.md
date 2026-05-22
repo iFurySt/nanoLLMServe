@@ -40,6 +40,10 @@ The runtime now includes:
   waiting/running/finished request lifecycle state, rebuilds a padded active
   batch each decode step, records active batch size metrics, and removes
   completed rows without stopping the scheduler.
+- `v0.5` block KV cache manager: tracks fixed-size token blocks, a free block
+  pool, request-to-block tables, allocation/release, and fragmentation metrics.
+  The manager is allocator metadata and is wired into generation lifecycle; it
+  does not replace Hugging Face `past_key_values` with GPU block tensors yet.
 
 The CLI and HTTP server both use the single-request path. `generate_batch` and
 `generate_continuous_batch` are used by benchmarked batching scenarios while
@@ -171,16 +175,25 @@ Continuous batch benchmark path
       -> sample one token per active row
       -> completed rows leave the running set before the next step
       -> return per-request results plus active_batch_size step metrics
+
+Block KV cache manager path
+  -> KVBlockManager(total_blocks, block_size)
+  -> generation prefill allocates prompt token blocks per request
+  -> each generated token appends capacity and may allocate a new block
+  -> completion releases request block tables back to the free pool
+  -> benchmarks/benchmark_block_manager.py reports reserved tokens,
+     internal fragmentation, utilization, and a contiguous-slot comparison
 ```
 
 ## Known Gaps
 
-- KV cache reuse uses Hugging Face `past_key_values` directly; there is no paged
-  KV cache, block allocator, eviction, or prefix reuse yet.
+- KV cache reuse uses Hugging Face `past_key_values` directly. v0.5 adds block
+  allocation metadata and lifecycle hooks, but it does not implement a
+  PagedAttention kernel, tensor paging, eviction, or prefix reuse yet.
 - Static batching exists for a fixed batch size in `engine.generate_batch`.
   Continuous batching exists at scheduler level in `generate_continuous_batch`,
-  but it intentionally rebuilds full-token active batches and does not yet carry
-  per-row paged KV cache across dynamic batch rebuilds.
+  but it still rebuilds full-token active batches; v0.5 exposes block ownership
+  metadata before v0.6 prefix cache and later tensor-level paging work.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
   does not implement auth, tools, background Responses runs, Responses cancel,

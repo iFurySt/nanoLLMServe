@@ -112,6 +112,25 @@ JSON 结果会包含 `continuous_batch.active_batch_sizes` 和
 `continuous_batch.mean_active_batch_size`。这个里程碑会重算 active rows 的完整
 token 序列；动态行的 paged KV cache 留给 v0.5。
 
+## v0.5 Block KV Cache Manager
+
+v0.5 增加固定大小 KV block 的分配器元数据：free block pool、request-to-block
+table、生成生命周期里的 allocate/release hook，以及可观测的碎片率指标。它用于解释
+PagedAttention 的内存管理动机，但还不包含自定义 GPU kernel。
+
+运行合成碎片 benchmark：
+
+```bash
+python benchmarks/benchmark_block_manager.py \
+  --block-size 16 \
+  --total-blocks 64 \
+  --request-tokens 9,17,33,5,41,12
+```
+
+JSON 输出会把 block allocation 和 contiguous fixed-slot baseline 做对比，并报告
+`internal_fragmentation_tokens`、`block_utilization` 和
+`fragmentation_tokens_saved_vs_contiguous`。
+
 ## v0.1 OpenAI-Compatible Server
 
 启动一个只服务单个本地或 Hugging Face causal LM 的 HTTP server：

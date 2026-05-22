@@ -116,6 +116,26 @@ The output includes `continuous_batch.active_batch_sizes` and
 `continuous_batch.mean_active_batch_size`. This milestone intentionally
 recomputes full active rows; paged KV cache for dynamic rows belongs to v0.5.
 
+## v0.5 Block KV Cache Manager
+
+v0.5 adds allocator metadata for fixed-size KV blocks: a free block pool,
+request-to-block tables, allocation/release hooks in generation, and observable
+fragmentation metrics. It demonstrates the memory-management motivation behind
+PagedAttention without adding a custom GPU kernel yet.
+
+Run the synthetic fragmentation benchmark:
+
+```bash
+python benchmarks/benchmark_block_manager.py \
+  --block-size 16 \
+  --total-blocks 64 \
+  --request-tokens 9,17,33,5,41,12
+```
+
+The output compares block allocation against a contiguous fixed-slot baseline
+and reports `internal_fragmentation_tokens`, `block_utilization`, and
+`fragmentation_tokens_saved_vs_contiguous`.
+
 ## v0.1 OpenAI-Compatible Server
 
 Serve one local or Hugging Face causal LM:

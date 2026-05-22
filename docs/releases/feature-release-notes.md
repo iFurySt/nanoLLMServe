@@ -4,6 +4,7 @@
 
 | Date | Area | User Impact | Change Summary |
 | --- | --- | --- | --- |
+| 2026-05-22 | v0.5 Block KV cache manager | Users can inspect KV block allocation, release, utilization, and fragmentation behavior through tests and a benchmark. | Added `KVBlockManager`, request block tables, free block pool, generation lifecycle hooks, usage metrics, and `benchmark_block_manager.py`. |
 | 2026-05-19 | v0.4 Continuous batching | Users can benchmark scheduler-level continuous batching where requests arrive and finish across scheduler steps. | Added `ContinuousBatchScheduler`, `generate_continuous_batch`, per-step active batch metrics, benchmark `continuous_batch` output, and tests for admission/removal behavior. |
 | 2026-05-18 | v0.3 Responses API | Users can cancel running responses, continue from prior turns, and parse deterministic response SSE ordering. | Added `/v1/responses/{response_id}/cancel`, `previous_response_id` continuation for text-only prompts, in-memory response state transitions, and ordered SSE `sequence_number` events. |
 | 2026-05-18 | v0.3 Static batching | Users can benchmark fixed-size batching for multiple prompts in one model forward path. | Added `engine.generate_batch` with padded prompt tokenization, lock-step prefill/decode over fixed batches, new batch benchmark output (`--batch-size`, `static_batch`), and tests for batch behavior/coverage. |

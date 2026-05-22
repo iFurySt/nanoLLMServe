@@ -4,6 +4,7 @@ import pytest
 
 torch = pytest.importorskip("torch")
 
+from nanollmserve.cache.block_manager import KVBlockManager
 from nanollmserve.engine.engine import (
     generate_batch,
     generate_continuous_batch,
@@ -11,6 +12,27 @@ from nanollmserve.engine.engine import (
     stream_generate_one,
 )
 from nanollmserve.engine.scheduler import ContinuousBatchRequest
+
+
+class TrackingBlockManager(KVBlockManager):
+    def __post_init__(self):
+        super().__post_init__()
+        self.events = []
+
+    def allocate(self, request_id, token_count):
+        table = super().allocate(request_id, token_count)
+        self.events.append(("allocate", request_id, self.usage().used_blocks, self.usage().allocated_tokens))
+        return table
+
+    def append_tokens(self, request_id, token_count=1):
+        table = super().append_tokens(request_id, token_count)
+        self.events.append(("append", request_id, self.usage().used_blocks, self.usage().allocated_tokens))
+        return table
+
+    def release(self, request_id):
+        released = super().release(request_id)
+        self.events.append(("release", request_id, self.usage().used_blocks, self.usage().allocated_tokens))
+        return released
 
 
 class FakeTokenizer:
@@ -282,6 +304,30 @@ def test_generate_one_reuses_kv_cache_after_prefill():
     assert result.tpot_seconds >= 0
 
 
+def test_generate_one_allocates_and_releases_kv_blocks():
+    manager = TrackingBlockManager(total_blocks=4, block_size=2)
+
+    generate_one(
+        FakeModel(),
+        FakeTokenizer(),
+        "hello",
+        max_new_tokens=3,
+        temperature=0.0,
+        kv_block_manager=manager,
+        request_id="req-a",
+    )
+
+    assert [event[:2] for event in manager.events] == [
+        ("allocate", "req-a"),
+        ("append", "req-a"),
+        ("append", "req-a"),
+        ("append", "req-a"),
+        ("release", "req-a"),
+    ]
+    assert manager.events[0] == ("allocate", "req-a", 1, 2)
+    assert manager.events[-1] == ("release", "req-a", 0, 0)
+
+
 def test_stream_generate_one_yields_incremental_tokens():
     steps = list(
         stream_generate_one(
@@ -325,6 +371,33 @@ def test_generate_batch_prefill_and_decode_all_requests_together():
     assert model.call_attention_masks[1].shape == (2, 4)
     assert model.call_attention_masks[2].shape == (2, 5)
     assert model.call_use_cache == [True, True, True]
+
+
+def test_generate_batch_allocates_and_releases_kv_blocks_per_request():
+    manager = TrackingBlockManager(total_blocks=8, block_size=2)
+
+    generate_batch(
+        FakeBatchModel(
+            next_token_schedule=[
+                [2, 4],
+                [3, 5],
+                [9, 6],
+            ]
+        ),
+        FakeBatchTokenizer(),
+        ["hello", "world"],
+        max_new_tokens=3,
+        temperature=0.0,
+        kv_block_manager=manager,
+        request_ids=["req-a", "req-b"],
+    )
+
+    assert ("allocate", "req-a", 1, 2) in manager.events
+    assert ("allocate", "req-b", 2, 4) in manager.events
+    assert manager.events[-2:] == [
+        ("release", "req-b", 3, 5),
+        ("release", "req-a", 0, 0),
+    ]
 
 
 def test_generate_batch_keeps_finished_request_from_growing():
@@ -397,6 +470,24 @@ def test_generate_continuous_batch_admits_new_request_while_decoding():
         (1, 4),
     ]
     assert model.call_use_cache == [False, False, False, False]
+
+
+def test_generate_continuous_batch_releases_completed_request_blocks_mid_run():
+    manager = TrackingBlockManager(total_blocks=8, block_size=2)
+
+    generate_continuous_batch(
+        FakeContinuousModel(),
+        FakeContinuousTokenizer(),
+        [
+            ContinuousBatchRequest("short-0", "short", max_new_tokens=4, arrival_step=0),
+            ContinuousBatchRequest("late-1", "late", max_new_tokens=4, arrival_step=1),
+        ],
+        temperature=0.0,
+        kv_block_manager=manager,
+    )
+
+    assert ("release", "short-0", 2, 3) in manager.events
+    assert manager.events[-1] == ("release", "late-1", 0, 0)
 
 
 def test_generate_continuous_batch_respects_max_batch_size():
