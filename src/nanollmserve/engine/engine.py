@@ -75,6 +75,59 @@ class ContinuousBatchRunResult:
         return [step.active_batch_size for step in self.scheduler_steps]
 
 
+@dataclass(frozen=True)
+class ChunkedPrefillStepStats:
+    step: int
+    admitted_request_ids: list[str]
+    prefill_request_ids: list[str]
+    decode_request_ids: list[str]
+    completed_request_ids: list[str]
+    prefill_tokens: int
+
+
+@dataclass(frozen=True)
+class ChunkedPrefillGenerationResult:
+    request_id: str
+    result: GenerationResult
+    arrival_step: int
+    admitted_step: int
+    first_token_step: int
+    finished_step: int
+    time_to_first_token_seconds: float
+
+
+@dataclass(frozen=True)
+class ChunkedPrefillRunResult:
+    results: list[ChunkedPrefillGenerationResult]
+    scheduler_steps: list[ChunkedPrefillStepStats]
+
+    @property
+    def prefill_tokens_per_step(self) -> list[int]:
+        return [step.prefill_tokens for step in self.scheduler_steps]
+
+
+@dataclass
+class _ChunkedPrefillState:
+    request: ContinuousBatchRequest
+    state: GenerationRequestState
+    input_ids: torch.Tensor
+    admitted_step: int
+    admitted_at: float
+    prefilled_tokens: int = 0
+    first_token_step: int | None = None
+    first_token_at: float | None = None
+    finished_step: int | None = None
+    finished_at: float | None = None
+
+    @property
+    def remaining_prefill_tokens(self) -> int:
+        return self.state.prompt_tokens - self.prefilled_tokens
+
+    @property
+    def needs_prefill(self) -> bool:
+        return self.remaining_prefill_tokens > 0
+
+
 def _model_device(model):
     import torch
 
@@ -435,6 +488,157 @@ def generate_continuous_batch(
     return ContinuousBatchRunResult(results=results, scheduler_steps=scheduler_steps)
 
 
+def generate_chunked_prefill_batch(
+    model,
+    tokenizer,
+    requests: list[ContinuousBatchRequest],
+    *,
+    max_prefill_tokens_per_step: int = 128,
+    max_batch_size: int | None = None,
+    temperature: float = 0.0,
+    seed: int | None = None,
+) -> ChunkedPrefillRunResult:
+    """Generate requests with decode-first chunked prefill scheduling.
+
+    Each scheduler step first decodes ready requests, then spends a bounded
+    prefill token budget on partial prompt chunks. Prefill candidates are sorted
+    by shortest remaining prompt first so short requests can cut in front of a
+    long prompt that arrived earlier.
+    """
+
+    if not requests:
+        raise ValueError("requests must contain at least one entry")
+    if max_prefill_tokens_per_step < 1:
+        raise ValueError("max_prefill_tokens_per_step must be at least 1")
+    if max_batch_size is not None and max_batch_size < 1:
+        raise ValueError("max_batch_size must be at least 1")
+
+    waiting = sorted(requests, key=lambda request: (request.arrival_step, request.request_id))
+    waiting_index = 0
+    active: dict[str, _ChunkedPrefillState] = {}
+    finished: dict[str, _ChunkedPrefillState] = {}
+    scheduler_steps: list[ChunkedPrefillStepStats] = []
+    eos_token_ids = _eos_token_ids(tokenizer)
+    eos_token_id = next(iter(eos_token_ids), 0)
+
+    device = _model_device(model)
+    generator = None
+    if seed is not None:
+        generator = torch.Generator(device=device)
+        generator.manual_seed(seed)
+
+    start = perf_counter()
+    step = 0
+    model.eval()
+    with torch.inference_mode():
+        while waiting_index < len(waiting) or active:
+            if not active and waiting_index < len(waiting):
+                step = max(step, waiting[waiting_index].arrival_step)
+
+            admitted_ids: list[str] = []
+            while waiting_index < len(waiting) and waiting[waiting_index].arrival_step <= step:
+                if max_batch_size is not None and len(active) >= max_batch_size:
+                    break
+                request = waiting[waiting_index]
+                chunk_state = _chunked_state_from_request(
+                    tokenizer,
+                    request,
+                    device,
+                    admitted_step=step,
+                    admitted_at=perf_counter(),
+                )
+                active[request.request_id] = chunk_state
+                admitted_ids.append(request.request_id)
+                waiting_index += 1
+
+            decode_ids: list[str] = []
+            completed_ids: list[str] = []
+            for request_id in _decode_ready_request_ids(active):
+                chunk_state = active[request_id]
+                decode_ids.append(request_id)
+                _decode_chunked_token(
+                    model,
+                    chunk_state,
+                    eos_token_ids=eos_token_ids,
+                    eos_token_id=eos_token_id,
+                    temperature=temperature,
+                    generator=generator,
+                    step=step,
+                    started_at=start,
+                )
+                if _chunked_request_complete(chunk_state):
+                    chunk_state.finished_step = step
+                    chunk_state.finished_at = perf_counter()
+                    finished[request_id] = chunk_state
+                    completed_ids.append(request_id)
+
+            for request_id in completed_ids:
+                active.pop(request_id, None)
+
+            prefill_ids: list[str] = []
+            prefill_tokens = 0
+            budget = max_prefill_tokens_per_step
+            for request_id in _prefill_candidate_request_ids(active):
+                if budget <= 0:
+                    break
+                chunk_state = active[request_id]
+                chunk_tokens = min(budget, chunk_state.remaining_prefill_tokens)
+                if chunk_tokens <= 0:
+                    continue
+                prefill_ids.append(request_id)
+                outputs, elapsed = _prefill_chunk(
+                    model,
+                    chunk_state,
+                    chunk_tokens=chunk_tokens,
+                )
+                chunk_state.state.prefill_seconds += elapsed
+                chunk_state.prefilled_tokens += chunk_tokens
+                prefill_tokens += chunk_tokens
+                budget -= chunk_tokens
+                if not chunk_state.needs_prefill:
+                    _record_first_chunked_token(
+                        chunk_state,
+                        outputs,
+                        eos_token_ids=eos_token_ids,
+                        temperature=temperature,
+                        generator=generator,
+                        step=step,
+                        admitted_at=chunk_state.admitted_at,
+                    )
+                    if _chunked_request_complete(chunk_state):
+                        chunk_state.finished_step = step
+                        chunk_state.finished_at = perf_counter()
+                        finished[request_id] = chunk_state
+                        completed_ids.append(request_id)
+
+            for request_id in completed_ids:
+                active.pop(request_id, None)
+
+            scheduler_steps.append(
+                ChunkedPrefillStepStats(
+                    step=step,
+                    admitted_request_ids=admitted_ids,
+                    prefill_request_ids=prefill_ids,
+                    decode_request_ids=decode_ids,
+                    completed_request_ids=completed_ids,
+                    prefill_tokens=prefill_tokens,
+                )
+            )
+            step += 1
+
+    return ChunkedPrefillRunResult(
+        results=[
+            _finalize_chunked_state(
+                finished[request.request_id],
+                tokenizer,
+                started_at=start,
+            )
+            for request in requests
+        ],
+        scheduler_steps=scheduler_steps,
+    )
+
+
 def stream_generate_one(
     model,
     tokenizer,
@@ -579,6 +783,164 @@ def _finalize_batch_state(
         prefill_seconds=state.prefill_seconds,
         decode_seconds=state.decode_seconds,
         finished=state.finished,
+    )
+
+
+def _chunked_state_from_request(
+    tokenizer,
+    request: ContinuousBatchRequest,
+    device,
+    *,
+    admitted_step: int,
+    admitted_at: float,
+) -> _ChunkedPrefillState:
+    state = _state_from_prompt(tokenizer, request.prompt, device)
+    input_ids = torch.tensor(state.prompt_token_ids, dtype=torch.long, device=device)
+    return _ChunkedPrefillState(
+        request=request,
+        state=state,
+        input_ids=input_ids,
+        admitted_step=admitted_step,
+        admitted_at=admitted_at,
+    )
+
+
+def _decode_ready_request_ids(active: dict[str, _ChunkedPrefillState]) -> list[str]:
+    return [
+        request_id
+        for request_id, chunk_state in sorted(active.items(), key=lambda item: (item[1].admitted_step, item[0]))
+        if not chunk_state.needs_prefill
+        and not chunk_state.state.finished
+        and chunk_state.state.generated_tokens < chunk_state.request.max_new_tokens
+    ]
+
+
+def _prefill_candidate_request_ids(active: dict[str, _ChunkedPrefillState]) -> list[str]:
+    candidates = [item for item in active.items() if item[1].needs_prefill]
+    candidates.sort(key=lambda item: (item[1].remaining_prefill_tokens, item[1].admitted_step, item[0]))
+    return [request_id for request_id, _ in candidates]
+
+
+def _prefill_chunk(
+    model,
+    chunk_state: _ChunkedPrefillState,
+    *,
+    chunk_tokens: int,
+):
+    start = chunk_state.prefilled_tokens
+    end = start + chunk_tokens
+    chunk_input_ids = chunk_state.input_ids[start:end].unsqueeze(0)
+    attention_mask = chunk_state.state.attention_mask[:end].unsqueeze(0)
+    prefill_start = perf_counter()
+    outputs = model(
+        input_ids=chunk_input_ids,
+        attention_mask=attention_mask,
+        past_key_values=chunk_state.state.past_key_values,
+        use_cache=True,
+    )
+    elapsed = perf_counter() - prefill_start
+    chunk_state.state.past_key_values = getattr(outputs, "past_key_values", None)
+    if chunk_state.state.past_key_values is None:
+        raise RuntimeError("model did not return past_key_values during chunked prefill")
+    return outputs, elapsed
+
+
+def _record_first_chunked_token(
+    chunk_state: _ChunkedPrefillState,
+    outputs,
+    *,
+    eos_token_ids: set[int],
+    temperature: float,
+    generator,
+    step: int,
+    admitted_at: float,
+) -> None:
+    next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
+    next_id = int(next_token[0, 0].item())
+    chunk_state.state.generated_token_ids.append(next_id)
+    chunk_state.state.attention_mask = torch.cat(
+        [
+            chunk_state.state.attention_mask,
+            torch.ones(1, dtype=chunk_state.state.attention_mask.dtype, device=chunk_state.state.attention_mask.device),
+        ],
+        dim=-1,
+    )
+    chunk_state.state.ttft_seconds = perf_counter() - admitted_at
+    chunk_state.first_token_step = step
+    chunk_state.first_token_at = perf_counter()
+    chunk_state.state.finished = next_id in eos_token_ids
+
+
+def _decode_chunked_token(
+    model,
+    chunk_state: _ChunkedPrefillState,
+    *,
+    eos_token_ids: set[int],
+    eos_token_id: int,
+    temperature: float,
+    generator,
+    step: int,
+    started_at: float,
+) -> None:
+    last_token = torch.tensor(
+        [[chunk_state.state.generated_token_ids[-1]]],
+        dtype=torch.long,
+        device=chunk_state.input_ids.device,
+    )
+    decode_start = perf_counter()
+    outputs = model(
+        input_ids=last_token,
+        attention_mask=chunk_state.state.attention_mask.unsqueeze(0),
+        past_key_values=chunk_state.state.past_key_values,
+        use_cache=True,
+    )
+    chunk_state.state.decode_seconds += perf_counter() - decode_start
+    chunk_state.state.past_key_values = getattr(outputs, "past_key_values", None)
+    if chunk_state.state.past_key_values is None:
+        raise RuntimeError("model did not return past_key_values during chunked decode")
+    next_token = _sample_from_outputs(outputs, temperature=temperature, generator=generator)
+    next_id = int(next_token[0, 0].item())
+    if chunk_state.state.generated_tokens >= chunk_state.request.max_new_tokens:
+        next_id = eos_token_id
+    chunk_state.state.generated_token_ids.append(next_id)
+    chunk_state.state.attention_mask = torch.cat(
+        [
+            chunk_state.state.attention_mask,
+            torch.ones(1, dtype=chunk_state.state.attention_mask.dtype, device=chunk_state.state.attention_mask.device),
+        ],
+        dim=-1,
+    )
+    chunk_state.state.finished = next_id in eos_token_ids
+    if chunk_state.first_token_step is None:
+        chunk_state.first_token_step = step
+        chunk_state.first_token_at = perf_counter()
+        chunk_state.state.ttft_seconds = chunk_state.first_token_at - started_at
+
+
+def _chunked_request_complete(chunk_state: _ChunkedPrefillState) -> bool:
+    return chunk_state.state.finished or chunk_state.state.generated_tokens >= chunk_state.request.max_new_tokens
+
+
+def _finalize_chunked_state(
+    chunk_state: _ChunkedPrefillState,
+    tokenizer,
+    *,
+    started_at: float,
+) -> ChunkedPrefillGenerationResult:
+    finished_at = chunk_state.finished_at if chunk_state.finished_at is not None else perf_counter()
+    first_token_at = chunk_state.first_token_at if chunk_state.first_token_at is not None else finished_at
+    return ChunkedPrefillGenerationResult(
+        request_id=chunk_state.request.request_id,
+        result=_finalize_batch_state(
+            chunk_state.state,
+            tokenizer,
+            elapsed=finished_at - chunk_state.admitted_at,
+        ),
+        arrival_step=chunk_state.request.arrival_step,
+        admitted_step=chunk_state.admitted_step,
+        first_token_step=chunk_state.first_token_step if chunk_state.first_token_step is not None else chunk_state.admitted_step,
+        finished_step=chunk_state.finished_step if chunk_state.finished_step is not None else chunk_state.admitted_step,
+        time_to_first_token_seconds=first_token_at - started_at,
     )
 
 

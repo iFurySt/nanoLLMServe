@@ -151,6 +151,25 @@ JSON 输出会对比 `no_prefix_cache` 和 `prefix_cache`，并报告 `cache_hit
 `cache_misses`、`mean_ttft_seconds`、`mean_prefill_seconds`，以及 TTFT/prefill
 speedup ratio。
 
+## v0.7 Chunked Prefill
+
+v0.7 增加 decode-first 的 chunked prefill scheduler，用于混合长短 prompt
+workload。长 prompt 会按 `max_prefill_tokens_per_step` 切块，剩余较短的 prefill
+可以在长 prompt 消耗下一个 scheduler step 前先执行。
+
+运行 mixed workload benchmark：
+
+```bash
+python benchmarks/benchmark_chunked_prefill.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --max-prefill-tokens-per-step 64
+```
+
+JSON 输出会对比 arrival-order monolithic prefill baseline 和 `chunked_prefill`，
+包括 `prefill_tokens_per_step`、`short_first_token_step` 和
+`short_time_to_first_token_speedup`。
+
 ## v0.1 OpenAI-Compatible Server
 
 启动一个只服务单个本地或 Hugging Face causal LM 的 HTTP server：

@@ -13,8 +13,8 @@ Track quality by product area and architectural layer so agents can prioritize t
 
 | Area | Score | Why | Next Step |
 | --- | --- | --- | --- |
-| Product surface | B | v0.6 adds single-request prefix-cache reuse, visible cache stats, and repeated-prefix benchmark output; batch prefix reuse and tensor-level paged KV remain future work. | Add chunked prefill and later connect prefix reuse to batch scheduling and tensor block ownership. |
-| Architecture docs | B | Package boundaries and runtime flow now document `generate_one`, static `generate_batch`, scheduler-level `generate_continuous_batch`, `KVBlockManager`, and `PrefixCache`. | Revisit when v0.7 chunked prefill changes long-prompt admission and prefill scheduling. |
-| Testing | B | Unit tests cover prefix hashing, longest-prefix lookup, ref counts, LRU eviction, single-request prefix prefill skipping, block allocation/release, batching, and response lifecycle behavior. | Add GPU benchmark validation for real model prefix-cache TTFT and later tensor-level paged-KV behavior. |
+| Product surface | B | v0.7 adds chunked prefill for mixed long/short prompt workloads with visible scheduler steps and a benchmark; HTTP endpoints still use the single-request path. | Add observability so scheduler, cache, and latency counters are exposed outside benchmark JSON. |
+| Architecture docs | B | Package boundaries and runtime flow now document `generate_one`, static `generate_batch`, continuous batching, `KVBlockManager`, `PrefixCache`, and chunked prefill scheduling. | Revisit when v0.8 introduces metrics/exporter boundaries. |
+| Testing | B | Unit tests cover chunked prefill scheduling, short-prompt prefill priority, prefix cache, block allocation/release, batching, and response lifecycle behavior. | Add GPU benchmark validation for real-model chunked prefill and later production-like mixed prefill/decode batching. |
 | Observability | D | No local stack or conventions yet. | Document logs, metrics, traces, and local access. |
 | Security | C | Defaults are documented, implementation is pending. | Add real auth, secret, and dependency rules. |

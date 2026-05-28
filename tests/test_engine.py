@@ -8,6 +8,7 @@ from nanollmserve.cache.block_manager import KVBlockManager
 from nanollmserve.cache.prefix_cache import PrefixCache
 from nanollmserve.engine.engine import (
     generate_batch,
+    generate_chunked_prefill_batch,
     generate_continuous_batch,
     generate_one,
     stream_generate_one,
@@ -267,6 +268,62 @@ class FakeContinuousModel:
             next_token = self.token_schedule[prompt_id][generated_count]
             logits[row, valid_length - 1, next_token] = 100.0
         return SimpleNamespace(logits=logits)
+
+
+class FakeChunkedTokenizer:
+    eos_token_id = 9
+
+    prompt_tokens = {
+        "long": [1, 1, 1, 1, 1, 1],
+        "short": [4, 4],
+    }
+
+    def __call__(self, prompt, return_tensors):
+        assert return_tensors == "pt"
+        return {
+            "input_ids": torch.tensor([self.prompt_tokens[prompt]], dtype=torch.long),
+            "attention_mask": torch.tensor([[1] * len(self.prompt_tokens[prompt])], dtype=torch.long),
+        }
+
+    def decode(self, token_ids, skip_special_tokens=True):
+        output = {
+            2: "L",
+            5: "S",
+        }
+        filtered = [value for value in token_ids if not skip_special_tokens or value != self.eos_token_id]
+        return "".join(output.get(item, "") for item in filtered)
+
+
+class FakeChunkedModel:
+    def __init__(self):
+        self.calls = []
+
+    def parameters(self):
+        return iter(())
+
+    def eval(self):
+        return self
+
+    def __call__(self, input_ids, attention_mask, past_key_values=None, use_cache=False):
+        past_tokens = int(past_key_values[0]) if past_key_values is not None else 0
+        self.calls.append(
+            {
+                "input_ids": input_ids.clone(),
+                "attention_mask": attention_mask.clone(),
+                "past_tokens": past_tokens,
+                "use_cache": use_cache,
+            }
+        )
+        token = int(input_ids[0, -1].item())
+        if token == 1:
+            next_id = 2
+        elif token == 4:
+            next_id = 5
+        else:
+            next_id = 9
+        logits = torch.full((*input_ids.shape, 10), -100.0, device=input_ids.device)
+        logits[:, -1, next_id] = 100.0
+        return SimpleNamespace(logits=logits, past_key_values=(past_tokens + input_ids.shape[-1],))
 
 
 def test_generate_one_runs_until_eos():
@@ -594,4 +651,48 @@ def test_generate_continuous_batch_rejects_empty_requests():
             FakeContinuousModel(),
             FakeContinuousTokenizer(),
             [],
+        )
+
+
+def test_generate_chunked_prefill_prioritizes_short_prefill_after_long_arrives_first():
+    model = FakeChunkedModel()
+
+    run = generate_chunked_prefill_batch(
+        model,
+        FakeChunkedTokenizer(),
+        [
+            ContinuousBatchRequest("long-0", "long", max_new_tokens=2, arrival_step=0),
+            ContinuousBatchRequest("short-1", "short", max_new_tokens=2, arrival_step=1),
+        ],
+        max_prefill_tokens_per_step=2,
+        temperature=0.0,
+    )
+
+    by_id = {result.request_id: result for result in run.results}
+
+    assert run.prefill_tokens_per_step == [2, 2, 2, 2, 0]
+    assert run.scheduler_steps[1].prefill_request_ids == ["short-1"]
+    assert run.scheduler_steps[2].decode_request_ids == ["short-1"]
+    assert by_id["short-1"].first_token_step == 1
+    assert by_id["short-1"].finished_step == 2
+    assert by_id["short-1"].result.text == "S"
+    assert by_id["long-0"].first_token_step == 3
+    assert by_id["long-0"].finished_step == 4
+    assert by_id["long-0"].result.text == "L"
+    assert [call["input_ids"].tolist() for call in model.calls[:5]] == [
+        [[1, 1]],
+        [[4, 4]],
+        [[5]],
+        [[1, 1]],
+        [[1, 1]],
+    ]
+
+
+def test_generate_chunked_prefill_rejects_invalid_budget():
+    with pytest.raises(ValueError, match="max_prefill_tokens_per_step"):
+        generate_chunked_prefill_batch(
+            FakeChunkedModel(),
+            FakeChunkedTokenizer(),
+            [ContinuousBatchRequest("long-0", "long", max_new_tokens=1, arrival_step=0)],
+            max_prefill_tokens_per_step=0,
         )

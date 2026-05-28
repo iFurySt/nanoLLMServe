@@ -157,6 +157,26 @@ The output compares `no_prefix_cache` with `prefix_cache` and reports
 `cache_hits`, `cache_misses`, `mean_ttft_seconds`, `mean_prefill_seconds`, and
 TTFT/prefill speedup ratios.
 
+## v0.7 Chunked Prefill
+
+v0.7 adds a decode-first chunked prefill scheduler for mixed long/short prompt
+workloads. Long prompts are split by `max_prefill_tokens_per_step`, while short
+remaining prefills can run before the long prompt consumes another scheduler
+step.
+
+Run the mixed workload benchmark:
+
+```bash
+python benchmarks/benchmark_chunked_prefill.py \
+  --model /data2/nanoLLMServe/models/Qwen3-1.7B \
+  --local-files-only \
+  --max-prefill-tokens-per-step 64
+```
+
+The output compares an arrival-order monolithic prefill baseline with
+`chunked_prefill`, including `prefill_tokens_per_step`,
+`short_first_token_step`, and `short_time_to_first_token_speedup`.
+
 ## v0.1 OpenAI-Compatible Server
 
 Serve one local or Hugging Face causal LM:

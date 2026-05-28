@@ -4,6 +4,7 @@
 
 | Date | Area | User Impact | Change Summary |
 | --- | --- | --- | --- |
+| 2026-05-28 | v0.7 Chunked prefill | Users can benchmark mixed long/short prompt workloads where long prefill is split across scheduler steps so shorter requests can reach first token earlier. | Added `generate_chunked_prefill_batch`, chunked prefill step stats, decode-first/shortest-prefill-first policy, `benchmark_chunked_prefill.py`, tests, and docs. |
 | 2026-05-22 | v0.6 Prefix cache | Users can reuse shared prompt-prefix KV state on the single-request path and benchmark repeated-prefix TTFT behavior. | Added `PrefixCache`, prefix token hashing, longest-prefix lookup, ref counts, LRU eviction, `generate_one` prefix-cache hooks, hit/miss stats, and `benchmark_prefix_cache.py`. |
 | 2026-05-22 | v0.5 Block KV cache manager | Users can inspect KV block allocation, release, utilization, and fragmentation behavior through tests and a benchmark. | Added `KVBlockManager`, request block tables, free block pool, generation lifecycle hooks, usage metrics, and `benchmark_block_manager.py`. |
 | 2026-05-19 | v0.4 Continuous batching | Users can benchmark scheduler-level continuous batching where requests arrive and finish across scheduler steps. | Added `ContinuousBatchScheduler`, `generate_continuous_batch`, per-step active batch metrics, benchmark `continuous_batch` output, and tests for admission/removal behavior. |

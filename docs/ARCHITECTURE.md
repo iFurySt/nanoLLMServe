@@ -48,10 +48,16 @@ The runtime now includes:
   Hugging Face `past_key_values`, performs longest strict-prefix lookup on the
   single-request path, tracks hit/miss/ref-count/LRU state, and pre-fills only
   the uncached suffix after a prefix hit.
+- `v0.7` chunked prefill: adds a decode-first, shortest-prefill-first scheduler
+  path that splits prompt prefill by `max_prefill_tokens_per_step`, tracks
+  per-step prefill/decode work, and lets short prompts reach first token while a
+  long prompt is still being prefilled.
 
 The CLI and HTTP server both use the single-request path. `generate_batch` and
-`generate_continuous_batch` are used by benchmarked batching scenarios while
-regular endpoints still call the single-request path by default.
+`generate_continuous_batch` are used by benchmarked batching scenarios.
+`generate_chunked_prefill_batch` is used by the mixed long/short prompt
+benchmark while regular endpoints still call the single-request path by
+default.
 
 ## Target Package Layout
 
@@ -195,6 +201,16 @@ Prefix cache path
   -> model prefill receives only the uncached suffix with cached past_key_values
   -> completion releases prefix-cache refs while entries stay available for reuse
   -> benchmarks/benchmark_prefix_cache.py compares no-cache vs prefix-cache TTFT
+
+Chunked prefill path
+  -> ContinuousBatchRequest rows with arrival_step
+  -> generate_chunked_prefill_batch(max_prefill_tokens_per_step)
+  -> scheduler admits arrived rows, decodes ready rows first, then spends bounded
+     token budget on shortest remaining prefill prompts
+  -> each prefill chunk advances Hugging Face past_key_values for that request
+  -> first token is sampled when a request's prompt prefill completes
+  -> benchmarks/benchmark_chunked_prefill.py compares monolithic long-first
+     baseline with chunked short-request time-to-first-token
 ```
 
 ## Known Gaps
@@ -207,6 +223,10 @@ Prefix cache path
   but it still rebuilds full-token active batches. Prefix reuse currently hooks
   into the single-request path only; batch-aware prefix reuse is deferred until
   later scheduler/cache work.
+- Chunked prefill is implemented as a readable sequential scheduler loop. It
+  demonstrates admission, partial prefill state, and decode-first scheduling,
+  but it does not batch multiple prefill chunks into one fused model call or
+  implement production fairness tuning.
 - The OpenAI-compatible server covers the common `/v1/models`,
   `/v1/responses`, `/v1/chat/completions`, and `/v1/completions` shapes, but it
   does not implement auth, tools, background Responses runs, Responses cancel,

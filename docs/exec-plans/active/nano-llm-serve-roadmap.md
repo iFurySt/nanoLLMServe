@@ -27,7 +27,7 @@ Build a readable LLM serving engine through small, runnable milestones.
 - [x] [`v0.4` continuous batching](./milestones/v0.4-continuous-batching.md)
 - [x] [`v0.5` block KV cache manager](./milestones/v0.5-block-kv-cache-manager.md)
 - [x] [`v0.6` prefix cache](./milestones/v0.6-prefix-cache.md)
-- [ ] [`v0.7` chunked prefill](./milestones/v0.7-chunked-prefill.md)
+- [x] [`v0.7` chunked prefill](./milestones/v0.7-chunked-prefill.md)
 - [ ] [`v0.8` observability](./milestones/v0.8-observability.md)
 - [ ] [`v0.9` structured output](./milestones/v0.9-structured-output.md)
 - [ ] [`v0.10` Responses API parity](./milestones/v0.10-responses-api-parity.md)
